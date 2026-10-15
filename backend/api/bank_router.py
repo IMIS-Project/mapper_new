@@ -24,12 +24,14 @@ from urllib.parse import quote, urlencode
 from uuid import uuid4
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.api.deps import bearer_scheme, get_current_active_user
+from backend.api.deps import bearer_scheme, get_current_active_user, get_db
 from backend.core.config import settings
 from backend.core.redaction import mask_sensitive
+from backend.services.log_writer import write_call_log
 from backend.schemas.bank import BankCallRequest, BankCallResponse, BankConfigResponse
 from backend.services.central_auth import CentralUser
 from backend.services.http_client import get_http_client
@@ -49,6 +51,24 @@ BEARER_PREFIX = "bearer "
 _TOKEN_IN_HEADER = re.compile(r"^\s*bearer\s+", re.IGNORECASE)
 
 
+_EXAMPLES: dict[str, str] = {
+    "GrantType": "client_credentials",
+    "Scope": "GetToken",
+    "Transaction_Ref": "SSPA1730000000A1B2",
+    "Amount": "500",
+    "To_Account": "0123456789",
+    "CNIC_No": "35202-1234567-1",
+    "Mobile_No": "0300-1234567",
+    "CustomerCNIC": "35202-1234567-1",
+    "MobileNumber": "0300-1234567",
+    "Province": "Sindh",
+    "CNICIssuanceDate": "2024-01-15",
+    "AccountOpeningDate": "2024-01-15",
+    "CNIC_Expiry_Date": "2029-01-15",
+    "cnic": "35202-1234567-1",
+}
+
+
 def _field(
     name: str,
     label: str,
@@ -60,6 +80,7 @@ def _field(
     default: Any = None,
     options: tuple[str, ...] = (),
     digits: int | None = None,
+    value_type: str = "string",
 ) -> dict[str, Any]:
     return {
         "name": name,
@@ -74,6 +95,12 @@ def _field(
         # value never reaches an endpoint whose validator would otherwise
         # crash the integration service with a 500.
         "digits": digits,
+        # Schema metadata, rendered beside the JSON editor the way an API
+        # reference documents its request body.
+        "type": value_type,
+        "format": "password" if kind == "password" else None,
+        "enum": list(options) or None,
+        "example": _EXAMPLES.get(name, ""),
     }
 
 
@@ -388,6 +415,8 @@ async def bank_operations(
 @router.post("/bank/call", response_model=BankCallResponse)
 async def bank_call(
     payload: BankCallRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
     http_client: httpx.AsyncClient = Depends(get_http_client),
     _current_user: CentralUser = Depends(get_current_active_user),
@@ -483,6 +512,26 @@ async def bank_call(
         except ValueError:
             data = {"raw_response": response.text}
 
+        ok = _is_success(response.status_code, data)
+        background_tasks.add_task(
+            write_call_log,
+            db,
+            _build_log_entry(
+                operation,
+                method=method,
+                target_url=target_url,
+                request_headers=headers,
+                request_body=payload.payload,
+                status_code=response.status_code,
+                response_headers=dict(response.headers),
+                data=data,
+                success=ok,
+                error=None if ok else _describe(data),
+                elapsed_ms=elapsed_ms,
+                correlation_id=correlation_id,
+            ),
+        )
+
         return BankCallResponse(
             success=_is_success(response.status_code, data),
             operationId=operation["id"],
@@ -520,6 +569,24 @@ async def bank_call(
     except httpx.TimeoutException as exc:
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         logger.warning("Bank call %s timed out after %sms", operation["id"], elapsed_ms)
+        background_tasks.add_task(
+            write_call_log,
+            db,
+            _build_log_entry(
+                operation,
+                method=method,
+                target_url=target_url,
+                request_headers=headers,
+                request_body=payload.payload,
+                status_code=504,
+                response_headers=None,
+                data=None,
+                success=False,
+                error=f"Timed out after {settings.BANK_API_TIMEOUT_SECONDS}s: {exc}",
+                elapsed_ms=elapsed_ms,
+                correlation_id=correlation_id,
+            ),
+        )
         return BankCallResponse(
             success=False,
             operationId=operation["id"],
@@ -545,6 +612,24 @@ async def bank_call(
     except httpx.HTTPError as exc:
         elapsed_ms = int((time.perf_counter() - started) * 1000)
         logger.warning("Bank call %s failed: %s", operation["id"], exc)
+        background_tasks.add_task(
+            write_call_log,
+            db,
+            _build_log_entry(
+                operation,
+                method=method,
+                target_url=target_url,
+                request_headers=headers,
+                request_body=payload.payload,
+                status_code=502,
+                response_headers=None,
+                data=None,
+                success=False,
+                error=f"Could not reach the integration service: {exc}",
+                elapsed_ms=elapsed_ms,
+                correlation_id=correlation_id,
+            ),
+        )
         return BankCallResponse(
             success=False,
             operationId=operation["id"],
@@ -657,6 +742,46 @@ def _bank_layer(data: Any) -> dict[str, Any] | None:
         }
 
     return None
+
+
+def _build_log_entry(
+    operation: dict[str, Any],
+    *,
+    method: str,
+    target_url: str,
+    request_headers: dict[str, str],
+    request_body: Any,
+    status_code: int | None,
+    response_headers: dict[str, str] | None,
+    data: Any,
+    success: bool,
+    error: str | None,
+    elapsed_ms: int,
+    correlation_id: str,
+) -> dict[str, Any]:
+    """Shape a bank call like a gateway result so it lands in Call Logs.
+
+    "Source" is this console talking to the integration service; the bank sits
+    behind that, so the target columns are left unset rather than guessed.
+    """
+    return {
+        "request_id": correlation_id,
+        "endpoint_id": None,
+        "method": method,
+        "path": operation["path"],
+        "external_request_url": target_url,
+        "external_request_method": method,
+        "external_status_code": status_code,
+        "request_headers": _mask_headers(request_headers),
+        "response_headers": _mask_headers(response_headers) if response_headers else None,
+        "internal_request_body": _mask_body(request_body),
+        "request_body": _mask_body(request_body),
+        "data": data,
+        "success": success,
+        "error": error,
+        "total_time_ms": elapsed_ms,
+        "status_code": status_code,
+    }
 
 
 def _as_int(value: Any) -> int | None:

@@ -1,7 +1,9 @@
 import {
 	ClearAll,
+	DataObject as DataObjectIcon,
 	PlayArrow,
 	Refresh as RefreshIcon,
+	Tune as TuneIcon,
 	WarningAmber,
 } from "@mui/icons-material";
 import {
@@ -16,6 +18,8 @@ import {
 	MenuItem,
 	Select,
 	TextField,
+	ToggleButton,
+	ToggleButtonGroup,
 	Tooltip,
 	Typography,
 } from "@mui/material";
@@ -30,12 +34,263 @@ const GROUPS = [
 	{ id: "c2c", label: "C2C" },
 ];
 
+const INPUT_MODES = [
+	{ id: "form", label: "Input boxes", icon: <TuneIcon fontSize="small" /> },
+	{ id: "json", label: "JSON", icon: <DataObjectIcon fontSize="small" /> },
+];
+
 function buildInitialValues(operation) {
 	const values = {};
 	(operation?.fields ?? []).forEach((field) => {
 		values[field.name] = field.default ?? "";
 	});
 	return values;
+}
+
+/** Values -> payload, dropping blanks so optional fields stay optional. */
+function valuesToPayload(operation, values) {
+	const payload = {};
+	const known = new Set();
+
+	(operation?.fields ?? []).forEach((field) => {
+		known.add(field.name);
+		const raw = values[field.name];
+		const text = raw == null ? "" : String(raw).trim();
+		if (text) payload[field.name] = text;
+	});
+
+	// Keys added in the JSON editor that the form has no input for. They must
+	// survive a round trip rather than being silently dropped.
+	Object.entries(values).forEach(([key, raw]) => {
+		const text = raw == null ? "" : String(raw).trim();
+		if (!known.has(key) && text) payload[key] = text;
+	});
+
+	return payload;
+}
+
+function payloadToValues(operation, payload) {
+	const values = buildInitialValues(operation);
+	Object.entries(payload).forEach(([key, value]) => {
+		values[key] =
+			value == null
+				? ""
+				: typeof value === "object"
+					? JSON.stringify(value)
+					: String(value);
+	});
+	return values;
+}
+
+/** Renders a field's type the way an API reference does. */
+function TypeBadge({ field, codeFont }) {
+	const label = field.enum ? "enum" : field.format || field.type || "string";
+	return (
+		<Typography
+			component="span"
+			sx={{
+				fontFamily: codeFont,
+				fontSize: "0.72rem",
+				color: "text.secondary",
+			}}
+		>
+			{label}
+		</Typography>
+	);
+}
+
+/**
+ * Swagger-style request body reference: every field with its type, whether it
+ * is required, and its constraints. Sits above the JSON editor so the shape of
+ * the payload is documented in the same terms as the API reference.
+ */
+function SchemaTable({ operation, codeFont }) {
+	const fields = operation?.fields ?? [];
+	if (fields.length === 0) return null;
+
+	return (
+		<Box
+			sx={{
+				mb: 1.5,
+				borderRadius: 2,
+				border: "1px solid",
+				borderColor: "divider",
+				overflow: "hidden",
+			}}
+		>
+			<Box
+				sx={{
+					px: 1.75,
+					py: 1,
+					backgroundColor: alpha("#1976d2", 0.08),
+					borderBottom: "1px solid",
+					borderColor: "divider",
+				}}
+			>
+				<Typography
+					className="mono-label"
+					sx={{ fontSize: "0.55rem", color: "text.secondary" }}
+				>
+					Schema · application/json
+				</Typography>
+			</Box>
+
+			<Box component="table" sx={{ width: "100%", borderCollapse: "collapse" }}>
+				<Box component="thead">
+					<Box component="tr">
+						{["Field", "Type", "Required", "Notes"].map((head) => (
+							<Box
+								key={head}
+								component="th"
+								sx={{
+									px: 1.75,
+									py: 0.75,
+									textAlign: "left",
+									fontFamily: codeFont,
+									fontSize: "0.58rem",
+									fontWeight: 500,
+									letterSpacing: "0.12em",
+									textTransform: "uppercase",
+									color: "text.disabled",
+									borderBottom: "1px solid",
+									borderColor: "divider",
+									whiteSpace: "nowrap",
+								}}
+							>
+								{head}
+							</Box>
+						))}
+					</Box>
+				</Box>
+
+				<Box component="tbody">
+					{fields.map((field) => (
+						<Box
+							key={field.name}
+							component="tr"
+							sx={{
+								"&:hover": { backgroundColor: alpha("#1976d2", 0.04) },
+							}}
+						>
+							<Box
+								component="td"
+								sx={{
+									px: 1.75,
+									py: 0.9,
+									fontFamily: codeFont,
+									fontSize: "0.76rem",
+									fontWeight: 600,
+									whiteSpace: "nowrap",
+									borderBottom: "1px solid",
+									borderColor: "divider",
+								}}
+							>
+								{field.name}
+							</Box>
+
+							<Box
+								component="td"
+								sx={{
+									px: 1.75,
+									py: 0.9,
+									whiteSpace: "nowrap",
+									borderBottom: "1px solid",
+									borderColor: "divider",
+								}}
+							>
+								<TypeBadge field={field} codeFont={codeFont} />
+							</Box>
+
+							<Box
+								component="td"
+								sx={{
+									px: 1.75,
+									py: 0.9,
+									whiteSpace: "nowrap",
+									borderBottom: "1px solid",
+									borderColor: "divider",
+									fontFamily: codeFont,
+									fontSize: "0.72rem",
+									color: field.required ? "error.main" : "text.disabled",
+								}}
+							>
+								{field.required ? "required" : "optional"}
+							</Box>
+
+							<Box
+								component="td"
+								sx={{
+									px: 1.75,
+									py: 0.9,
+									color: "text.secondary",
+									fontSize: "0.72rem",
+									lineHeight: 1.55,
+									borderBottom: "1px solid",
+									borderColor: "divider",
+								}}
+							>
+								<Notes field={field} codeFont={codeFont} />
+							</Box>
+						</Box>
+					))}
+				</Box>
+			</Box>
+		</Box>
+	);
+}
+
+function Notes({ field, codeFont }) {
+	const notes = [];
+
+	if (field.enum?.length) {
+		notes.push(
+			<Box key="enum" sx={{ fontFamily: codeFont }}>
+				One of: {field.enum.join(" | ")}
+			</Box>,
+		);
+	}
+	if (field.digits) {
+		notes.push(<Box key="digits">{field.digits} digits, separators allowed</Box>);
+	}
+	if (field.help) notes.push(<Box key="help">{field.help}</Box>);
+	if (!notes.length) {
+		return (
+			<Typography component="span" sx={{ color: "text.disabled" }}>
+				—
+			</Typography>
+		);
+	}
+
+	return <Box sx={{ display: "flex", flexDirection: "column", gap: 0.35 }}>{notes}</Box>;
+}
+
+/** A payload seeded from the catalog examples, so the JSON view documents itself. */
+function examplePayload(operation) {
+	const payload = {};
+	(operation?.fields ?? []).forEach((field) => {
+		if (field.example !== undefined && field.example !== null) {
+			payload[field.name] = field.example;
+		}
+	});
+	return payload;
+}
+
+function parseJsonPayload(text) {
+	const trimmed = (text ?? "").trim();
+	if (!trimmed) return { ok: true, value: {} };
+
+	let parsed;
+	try {
+		parsed = JSON.parse(trimmed);
+	} catch (error) {
+		return { ok: false, error: `Invalid JSON — ${error.message}` };
+	}
+
+	if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+		return { ok: false, error: "The payload must be a JSON object." };
+	}
+
+	return { ok: true, value: parsed };
 }
 
 function SectionLabel({ children }) {
@@ -168,6 +423,11 @@ export default function BankOperationForm({
 	const codeFont = theme.typography.fontFamilyCode;
 
 	const [values, setValues] = useState(() => buildInitialValues(operation));
+	const [jsonText, setJsonText] = useState(() =>
+		JSON.stringify(examplePayload(operation), null, 2),
+	);
+	const [inputMode, setInputMode] = useState("form");
+	const [jsonError, setJsonError] = useState("");
 	const [errors, setErrors] = useState({});
 	const [correlationId, setCorrelationId] = useState("");
 
@@ -191,21 +451,54 @@ export default function BankOperationForm({
 		});
 	};
 
-	const handleSubmit = () => {
+	/** Switching modes carries the current payload across in both directions. */
+	const handleModeChange = (_event, next) => {
+		if (!next || next === inputMode) return;
+
+		if (next === "json") {
+			// Show the real values if anything is filled in, otherwise the
+			// documented example so the shape is never an empty object.
+			const current = valuesToPayload(operation, values);
+			setJsonText(
+				JSON.stringify(
+					Object.keys(current).length ? current : examplePayload(operation),
+					null,
+					2,
+				),
+			);
+			setJsonError("");
+		} else {
+			const parsed = parseJsonPayload(jsonText);
+			if (!parsed.ok) {
+				// Don't silently discard the edit by bouncing back.
+				setJsonError(parsed.error);
+				return;
+			}
+			setValues(payloadToValues(operation, parsed.value));
+			setJsonError("");
+			setErrors({});
+		}
+
+		setInputMode(next);
+	};
+
+	/** Field-level checks, run against whichever mode is active. */
+	const validate = (payload) => {
 		const nextErrors = {};
-		const payload = {};
 
 		(operation?.fields ?? []).forEach((field) => {
-			const raw = values[field.name];
+			const raw = payload[field.name];
 			const text = raw == null ? "" : String(raw).trim();
+
 			if (field.required && !text) {
 				nextErrors[field.name] = `${field.label} is required.`;
+				return;
 			}
 
 			// Mirror the upstream digit rules. The service validates these with
 			// a pydantic validator whose error path returns 500, so catching it
 			// here keeps a typo from becoming a server error.
-			if (!nextErrors[field.name] && field.digits && text) {
+			if (field.digits && text) {
 				const digits = text.replace(/\D/g, "");
 				if (!digits) {
 					nextErrors[field.name] = `${field.label} must contain digits.`;
@@ -213,16 +506,52 @@ export default function BankOperationForm({
 					nextErrors[field.name] = `${field.label} must be exactly ${field.digits} digits.`;
 				}
 			}
-
-			if (text) payload[field.name] = text;
 		});
 
-		if (Object.keys(nextErrors).length > 0) {
-			setErrors(nextErrors);
-			return;
+		return nextErrors;
+	};
+
+	const handleSubmit = () => {
+		let payload;
+
+		if (inputMode === "json") {
+			const parsed = parseJsonPayload(jsonText);
+			if (!parsed.ok) {
+				setJsonError(parsed.error);
+				return;
+			}
+			setJsonError("");
+			payload = parsed.value;
+
+			const fieldErrors = validate(payload);
+			if (Object.keys(fieldErrors).length > 0) {
+				// Reflect them on the form so the user can see which key is wrong.
+				setValues(payloadToValues(operation, payload));
+				setInputMode("form");
+				setErrors(fieldErrors);
+				return;
+			}
+		} else {
+			payload = valuesToPayload(operation, values);
+
+			const fieldErrors = validate(payload);
+			if (Object.keys(fieldErrors).length > 0) {
+				setErrors(fieldErrors);
+				return;
+			}
 		}
 
+		setErrors({});
 		onSubmit({ payload, correlationId: correlationId.trim() });
+	};
+
+	const handleReset = () => {
+		const fresh = buildInitialValues(operation);
+		setValues(fresh);
+		setErrors({});
+		setJsonError("");
+		setJsonText(JSON.stringify(examplePayload(operation), null, 2));
+		setCorrelationId("");
 	};
 
 	return (
@@ -417,73 +746,142 @@ export default function BankOperationForm({
 						)}
 
 						<SectionLabel>Payload</SectionLabel>
-						<Box
+						<ToggleButtonGroup
+							value={inputMode}
+							exclusive
+							onChange={handleModeChange}
+							size="small"
 							sx={{
-								display: "grid",
-								gridTemplateColumns: {
-									xs: "minmax(0, 1fr)",
-									sm: "repeat(auto-fit, minmax(240px, 1fr))",
+								mb: 1.75,
+								"& .MuiToggleButton-root": {
+									fontSize: "0.72rem",
+									px: 1.5,
+									py: 0.4,
+									gap: 0.75,
+									textTransform: "none",
 								},
-								gap: 1.75,
 							}}
 						>
-							{(operation.fields ?? []).map((field) => {
-								const fullWidth = field.kind !== "select";
-								return (
-									<Box
-										key={field.name}
-										sx={{ gridColumn: fullWidth ? "1 / -1" : "auto" }}
-									>
-										{field.kind === "select" ? (
-											<FormControl fullWidth size="small" error={Boolean(errors[field.name])}>
-												<InputLabel id={`${field.name}-label`}>
-													{field.label}
-												</InputLabel>
-												<Select
-													labelId={`${field.name}-label`}
+							{INPUT_MODES.map((mode) => (
+								<ToggleButton key={mode.id} value={mode.id}>
+									{mode.icon}
+									{mode.label}
+								</ToggleButton>
+							))}
+						</ToggleButtonGroup>
+
+						{inputMode === "json" ? (
+							<>
+								{jsonError ? (
+									<Alert severity="error" variant="outlined" sx={{ mb: 1.5 }}>
+										{jsonError}
+									</Alert>
+								) : null}
+								<SchemaTable operation={operation} codeFont={codeFont} />
+
+								<TextField
+									fullWidth
+									multiline
+									minRows={10}
+									maxRows={26}
+									value={jsonText}
+									onChange={(event) => {
+										setJsonText(event.target.value);
+										setJsonError("");
+									}}
+									spellCheck={false}
+									sx={{
+										"& textarea": {
+											fontFamily: codeFont,
+											fontSize: "0.76rem",
+											lineHeight: 1.65,
+										},
+									}}
+								/>
+								<Typography
+									variant="caption"
+									sx={{ display: "block", color: "text.disabled", mt: 1 }}
+								>
+									Any field the endpoint accepts can be added here, including ones
+									with no input box.
+								</Typography>
+							</>
+						) : (
+							<Box
+								sx={{
+									display: "grid",
+									gridTemplateColumns: {
+										xs: "minmax(0, 1fr)",
+										sm: "repeat(auto-fit, minmax(240px, 1fr))",
+									},
+									gap: 1.75,
+								}}
+							>
+								{(operation.fields ?? []).map((field) => {
+									const fullWidth = field.kind !== "select";
+									return (
+										<Box
+											key={field.name}
+											sx={{ gridColumn: fullWidth ? "1 / -1" : "auto" }}
+										>
+											{field.kind === "select" ? (
+												<FormControl
+													fullWidth
+													size="small"
+													error={Boolean(errors[field.name])}
+												>
+													<InputLabel id={`${field.name}-label`}>
+														{field.label}
+													</InputLabel>
+													<Select
+														labelId={`${field.name}-label`}
+														label={field.label}
+														value={values[field.name] ?? ""}
+														onChange={(event) =>
+															handleChange(field.name, event.target.value)
+														}
+														sx={{ fontFamily: codeFont, fontSize: "0.78rem" }}
+													>
+														{field.options.map((option) => (
+															<MenuItem key={option} value={option}>
+																{option}
+															</MenuItem>
+														))}
+													</Select>
+												</FormControl>
+											) : (
+												<TextField
+													fullWidth
+													size="small"
+													type={field.kind === "password" ? "password" : "text"}
 													label={field.label}
 													value={values[field.name] ?? ""}
 													onChange={(event) =>
 														handleChange(field.name, event.target.value)
 													}
-													sx={{ fontFamily: codeFont, fontSize: "0.78rem" }}
-												>
-													{field.options.map((option) => (
-														<MenuItem key={option} value={option}>
-															{option}
-														</MenuItem>
-													))}
-												</Select>
-											</FormControl>
-										) : (
-											<TextField
-												fullWidth
-												size="small"
-												type={field.kind === "password" ? "password" : "text"}
-												label={field.label}
-												value={values[field.name] ?? ""}
-												onChange={(event) =>
-													handleChange(field.name, event.target.value)
-												}
-												placeholder={field.placeholder}
-												error={Boolean(errors[field.name])}
-												helperText={errors[field.name] || field.help || " "}
-												slotProps={{
-													htmlInput: { "data-field": field.name },
-												}}
-												sx={{
-													"& input": { fontFamily: codeFont, fontSize: "0.78rem" },
-													"& .MuiFormHelperText-root": {
-														fontSize: "0.66rem",
-														minHeight: "1em",
-													},
-												}}
-											/>
-										)}
-									</Box>
-								);
-							})}
-						</Box>
+													placeholder={field.placeholder}
+													error={Boolean(errors[field.name])}
+													helperText={errors[field.name] || field.help || " "}
+													slotProps={{
+														htmlInput: { "data-field": field.name },
+													}}
+													sx={{
+														"& input": {
+															fontFamily: codeFont,
+															fontSize: "0.78rem",
+														},
+														"& .MuiFormHelperText-root": {
+															fontSize: "0.66rem",
+															minHeight: "1em",
+														},
+													}}
+												/>
+											)}
+										</Box>
+									);
+								})}
+							</Box>
+						)}
 
 						<Box
 							sx={{
@@ -512,11 +910,7 @@ export default function BankOperationForm({
 								<Button
 									size="small"
 									color="inherit"
-									onClick={() => {
-										setValues(buildInitialValues(operation));
-										setErrors({});
-										setCorrelationId("");
-									}}
+									onClick={handleReset}
 									startIcon={<ClearAll fontSize="small" />}
 									sx={{ color: "text.secondary" }}
 								>

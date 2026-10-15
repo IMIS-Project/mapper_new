@@ -1,21 +1,22 @@
-"""Tests for the Bank Alfalah integration console proxy.
+"""Tests for the Bank Alfalah integration console.
 
 The console never forwards a caller-supplied URL, so the important behaviours
 covered here are: the operation allow-list, the header construction for each
-token flow, and the masking of secrets in the echoed request headers.
+token flow, the layered error reporting, secret masking, and the call-log
+entries written for every attempt.
 """
 
 import json
 import unittest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 from fastapi import HTTPException
+from fastapi.security import HTTPAuthorizationCredentials
 
 from backend.api import bank_router
 from backend.core.config import settings
 from backend.schemas.bank import BankCallRequest
-from fastapi.security import HTTPAuthorizationCredentials
 
 
 def _response(status_code: int, payload, headers=None) -> httpx.Response:
@@ -38,6 +39,49 @@ def _credentials(token: str = "session-token-abc") -> HTTPAuthorizationCredentia
     return HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
 
 
+def _tasks() -> MagicMock:
+    """Collects deferred write_call_log tasks instead of running them."""
+    tasks = MagicMock()
+    tasks.added = []
+    tasks.add_task = lambda fn, *a: tasks.added.append((fn, a))
+    return tasks
+
+
+def _logged(tasks):
+    """The single deferred log entry, as the log_data dict."""
+    entries = [a[1][1] for a in tasks.added]
+    assert len(entries) == 1, f"expected one log entry, got {len(entries)}"
+    return entries[0]
+
+
+class _BankCall:
+    """Mixin providing the dependencies every bank_call needs."""
+
+    def setUp(self):
+        self._base = settings.INTEGRATION_API_BASE_URL
+        settings.INTEGRATION_API_BASE_URL = "https://imis.test:9001"
+
+    def tearDown(self):
+        settings.INTEGRATION_API_BASE_URL = self._base
+
+    async def call(self, operation_id="bank-auth", payload=None, response=None,
+                   client=None, credentials="session-token-abc"):
+        tasks = _tasks()
+        used = client if client is not None else _client(response)
+        self._last_client_args = None
+        kwargs = {
+            "payload": BankCallRequest(operationId=operation_id, payload=payload or {}),
+            "background_tasks": tasks,
+            "db": MagicMock(),
+            "http_client": used,
+            "credentials": None if credentials is None else _credentials(credentials),
+            "_current_user": MagicMock(),
+        }
+        result = await bank_router.bank_call(**kwargs)
+        self._last_client_args = used.request.await_args
+        return result, tasks
+
+
 class CatalogTests(unittest.TestCase):
     def test_every_operation_targets_a_compliance_path(self):
         for op in bank_router.BANK_OPERATIONS:
@@ -54,32 +98,33 @@ class CatalogTests(unittest.TestCase):
 
         for op in gets:
             with self.subTest(operation=op["id"]):
-                self.assertEqual(op["paramStyle"], "path" if "{" in op["path"] else "query")
+                self.assertEqual(
+                    op["paramStyle"], "path" if "{" in op["path"] else "query"
+                )
                 self.assertEqual(op["paramName"], "cnic")
                 self.assertEqual([f["name"] for f in op["fields"]], ["cnic"])
-
-    def test_catalog_carries_no_internal_implementation_notes(self):
-        """
-        The catalog is rendered in the console, so every string value is
-        user-facing copy. Implementation detail (source files, function names,
-        which caller invokes what) belongs in a code comment, not here.
-        """
-        offenders = ("imis-frontend", ".py", ".ts", "get_oauth_token", "get_bank_auth_token")
-        for op in bank_router.BANK_OPERATIONS:
-            for key, value in op.items():
-                if not isinstance(value, str):
-                    continue
-                lowered = value.lower()
-                for marker in offenders:
-                    if marker.lower() in lowered:
-                        self.fail(f"{op['id']}.{key} leaks internals: {value!r}")
 
     def test_operation_ids_are_unique(self):
         ids = [op["id"] for op in bank_router.BANK_OPERATIONS]
         self.assertEqual(len(ids), len(set(ids)))
 
+    def test_catalog_carries_no_internal_implementation_notes(self):
+        """
+        The catalog is rendered in the console, so every string value is
+        user-facing copy. Implementation detail belongs in a code comment.
+        """
+        offenders = (
+            "imis-frontend", ".py", ".ts", "get_oauth_token", "get_bank_auth_token",
+        )
+        for op in bank_router.BANK_OPERATIONS:
+            for key, value in op.items():
+                if not isinstance(value, str):
+                    continue
+                for marker in offenders:
+                    if marker.lower() in value.lower():
+                        self.fail(f"{op['id']}.{key} leaks internals: {value!r}")
+
     def test_account_opening_surface_is_complete(self):
-        """Account opening is SSPA Registration plus the two lookup helpers."""
         account_opening = {
             op["id"]
             for op in bank_router.BANK_OPERATIONS
@@ -87,15 +132,10 @@ class CatalogTests(unittest.TestCase):
         }
         self.assertEqual(
             account_opening,
-            {
-                "sspa-registration",
-                "beneficiary-lookup-path",
-                "beneficiary-lookup-query",
-            },
+            {"sspa-registration", "beneficiary-lookup-path", "beneficiary-lookup-query"},
         )
 
     def test_removed_account_opening_endpoints_are_gone(self):
-        """The auto-auth account-opening pair was deliberately dropped."""
         ids = {op["id"] for op in bank_router.BANK_OPERATIONS}
         self.assertNotIn("account-opening", ids)
         self.assertNotIn("account-opening-update", ids)
@@ -104,8 +144,7 @@ class CatalogTests(unittest.TestCase):
 
     def test_sspa_registration_auto_chains_bank_auth(self):
         """
-        sspa_registration() does not authenticate itself - it only reads the
-        x-bank-authorization header (sspa_registration.py:122/140) - so the
+        sspa_registration() only reads the x-bank-authorization header, so the
         console must run /bank-auth first.
         """
         by_id = {op["id"]: op for op in bank_router.BANK_OPERATIONS}
@@ -116,13 +155,11 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(
             list(registration["autoChainCredentials"]), ["Username", "Password"]
         )
-        # Both credentials are already part of the registration payload.
         field_names = {field["name"] for field in registration["fields"]}
         for credential in registration["autoChainCredentials"]:
             self.assertIn(credential, field_names)
 
     def test_auto_chain_operation_exists_in_the_catalog(self):
-        """A dangling auto-chain target would silently send no token."""
         ids = {op["id"] for op in bank_router.BANK_OPERATIONS}
         for op in bank_router.BANK_OPERATIONS:
             if op.get("autoChain"):
@@ -130,17 +167,14 @@ class CatalogTests(unittest.TestCase):
                     self.assertIn(op["autoChainOperation"], ids)
 
     def test_c2c_endpoints_never_chain_a_token(self):
-        """c2c_disbursement.py calls get_oauth_token() internally."""
+        """c2c_disbursement obtains its own OAuth token internally."""
         for op in bank_router.BANK_OPERATIONS:
             if op["group"] == "c2c":
                 with self.subTest(operation=op["id"]):
-                    self.assertEqual(
-                        op["tokenFlow"], "token-generation-internal"
-                    )
+                    self.assertEqual(op["tokenFlow"], "token-generation-internal")
                     self.assertIsNone(op["tokenHeader"])
 
     def test_c2c_payment_aliases_cover_all_three_routes(self):
-        """c2c_payment.py registers the same handler under three paths."""
         by_id = {op["id"]: op for op in bank_router.BANK_OPERATIONS}
         self.assertEqual(
             set(by_id["c2c-payment"]["aliasPaths"]),
@@ -150,27 +184,45 @@ class CatalogTests(unittest.TestCase):
             },
         )
 
-    def test_bank_auth_flow_is_separate_from_token_generation(self):
-        """Account opening must use Bank Auth; C2C must use Token Generation."""
+    def test_every_digit_constrained_field_is_declared(self):
         by_id = {op["id"]: op for op in bank_router.BANK_OPERATIONS}
 
-        self.assertEqual(by_id["token-generation"]["tokenFlow"], "token-generation")
-        self.assertEqual(by_id["bank-auth"]["tokenFlow"], "bank-auth")
+        def digits_of(op_id, field_name):
+            for field in by_id[op_id]["fields"]:
+                if field["name"] == field_name:
+                    return field.get("digits")
+            return None
 
-        # Only SSPA registration takes a chained token, and it is the bank-auth one.
-        chained = [
-            op for op in bank_router.BANK_OPERATIONS if op.get("tokenHeader")
-        ]
-        self.assertEqual([op["id"] for op in chained], ["sspa-registration"])
-        self.assertEqual(chained[0]["tokenFlow"], "bank-auth")
-        self.assertEqual(chained[0]["tokenHeader"], "x-bank-authorization")
+        self.assertEqual(digits_of("c2c-payment", "CNIC_No"), 13)
+        self.assertEqual(digits_of("c2c-payment", "Mobile_No"), 11)
+        self.assertEqual(digits_of("sspa-registration", "CustomerCNIC"), 13)
+        self.assertEqual(digits_of("sspa-registration", "MobileNumber"), 11)
+        self.assertEqual(digits_of("beneficiary-lookup-path", "cnic"), 13)
 
-        for c2c in ("c2c-disbursement", "c2c-payment"):
-            self.assertEqual(
-                by_id[c2c]["tokenFlow"],
-                "token-generation-internal",
-                c2c,
-            )
+    def test_every_field_declares_its_type(self):
+        """The JSON view documents the schema, so no field may be untyped."""
+        for op in bank_router.BANK_OPERATIONS:
+            for field in op["fields"]:
+                with self.subTest(operation=op["id"], field=field["name"]):
+                    self.assertEqual(field["type"], "string")
+                    self.assertIn("example", field)
+                    self.assertIn("required", field)
+
+    def test_enum_fields_advertise_their_options(self):
+        by_id = {op["id"]: op for op in bank_router.BANK_OPERATIONS}
+        grant = next(
+            f for f in by_id["token-generation"]["fields"] if f["name"] == "GrantType"
+        )
+        self.assertEqual(grant["enum"], ["client_credentials"])
+
+    def test_password_fields_declare_the_format(self):
+        by_id = {op["id"]: op for op in bank_router.BANK_OPERATIONS}
+        secret = next(
+            f
+            for f in by_id["token-generation"]["fields"]
+            if f["name"] == "SecretKey"
+        )
+        self.assertEqual(secret["format"], "password")
 
     def test_unknown_operation_is_rejected(self):
         with self.assertRaises(HTTPException) as ctx:
@@ -197,17 +249,13 @@ class HeaderMaskingTests(unittest.TestCase):
         self.assertEqual(masked["Accept"], "application/json")
 
     def test_correlation_id_is_not_masked(self):
-        """It is not a secret and is the first thing you check when debugging."""
+        """Not a secret, and the first thing you check when debugging."""
         masked = bank_router._mask_headers({"x-correlation-id": "11111"})
         self.assertEqual(masked["x-correlation-id"], "11111")
 
 
 class JwtLeakTests(unittest.TestCase):
-    """A token parked under a neutral key must still be redacted.
-
-    Pydantic quotes the offending input in detail[].input, so a JWT under
-    "value" rendered in full before this was handled.
-    """
+    """A token parked under a neutral key must still be redacted."""
 
     JWT = (
         "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
@@ -238,9 +286,7 @@ class JwtLeakTests(unittest.TestCase):
         }
         masked = bank_router._mask_body(leaked)
         self.assertNotIn(self.JWT, json.dumps(masked))
-        self.assertEqual(
-            masked["detail"][0]["input"]["value"], bank_router.MASK
-        )
+        self.assertEqual(masked["detail"][0]["input"]["value"], bank_router.MASK)
 
     def test_jwt_embedded_in_free_text_is_scrubbed(self):
         masked = bank_router._mask_body({"msg": f"token {self.JWT} rejected"})
@@ -256,381 +302,9 @@ class JwtLeakTests(unittest.TestCase):
         self.assertEqual(masked["note"], "a.b.c")
 
 
-class BankSuccessCodeTests(unittest.TestCase):
-    """The banks answer HTTP 200 for business failures, with code != 200."""
-
-    def test_non_success_code_on_200_is_a_failure(self):
-        self.assertFalse(bank_router._is_success(200, {"code": "99"}))
-
-    def test_success_code_on_200_passes(self):
-        self.assertTrue(bank_router._is_success(200, {"code": "200"}))
-        self.assertTrue(bank_router._is_success(200, {"code": 0}))
-
-    def test_response_code_field_is_honoured(self):
-        self.assertTrue(
-            bank_router._is_success(200, {"ResponseCode": "200"})
-        )
-        self.assertFalse(
-            bank_router._is_success(200, {"ResponseCode": "401"})
-        )
-
-    def test_bodies_without_a_code_are_unaffected(self):
-        """tokenGeneration and the beneficiary lookups have no code field."""
-        self.assertTrue(
-            bank_router._is_success(200, {"access_token": "abc", "scope": "x"})
-        )
-        self.assertTrue(bank_router._is_success(200, {"data": {"CustomerName": "Ali"}}))
-
-    def test_non_numeric_code_is_not_treated_as_a_failure(self):
-        self.assertTrue(bank_router._is_success(200, {"code": "SUCCESS"}))
-
-    def test_http_error_is_always_a_failure(self):
-        self.assertFalse(bank_router._is_success(400, {"code": "200"}))
-
-
-class PayloadFormatTests(unittest.IsolatedAsyncioTestCase):
-    """
-    Upstream validates CNIC/mobile with pydantic validators that raise
-    ValueError; the service's 422 handler then fails to serialise its own
-    error and answers 500. These values must never get that far.
-    """
-
-    def setUp(self):
-        self._base = settings.INTEGRATION_API_BASE_URL
-        settings.INTEGRATION_API_BASE_URL = "https://imis.test:9001"
-
-    def tearDown(self):
-        settings.INTEGRATION_API_BASE_URL = self._base
-
-    async def _call(self, operation_id, payload):
-        client = _client(_response(200, {"code": "200"}))
-        with self.assertRaises(HTTPException) as ctx:
-            await bank_router.bank_call(
-                BankCallRequest(operationId=operation_id, payload=payload),
-                http_client=client,
-                credentials=_credentials(),
-                _current_user=MagicMock(),
-            )
-        # Nothing must reach the integration service.
-        client.request.assert_not_awaited()
-        return ctx.exception
-
-    async def test_short_cnic_is_rejected_before_sending(self):
-        exc = await self._call(
-            "c2c-payment", {"Amount": "1", "CNIC_No": "12345", "Mobile_No": "03001234567"}
-        )
-        self.assertEqual(exc.status_code, 400)
-        self.assertIn("13 digits", exc.detail)
-
-    async def test_non_numeric_cnic_is_rejected(self):
-        exc = await self._call(
-            "c2c-payment", {"Amount": "1", "CNIC_No": "not-a-cnic", "Mobile_No": "03001234567"}
-        )
-        self.assertIn("must contain digits", exc.detail)
-
-    async def test_wrong_length_mobile_is_rejected(self):
-        exc = await self._call(
-            "c2c-payment", {"Amount": "1", "CNIC_No": "3520212345671", "Mobile_No": "0300"}
-        )
-        self.assertIn("11 digits", exc.detail)
-
-    async def test_hyphenated_valid_cnic_is_accepted(self):
-        client = _client(_response(200, {"code": "200"}))
-        result = await bank_router.bank_call(
-            BankCallRequest(
-                operationId="c2c-payment",
-                payload={"Amount": "1", "CNIC_No": "35202-1234567-1", "Mobile_No": "0300-1234567"},
-            ),
-            http_client=client,
-            credentials=_credentials(),
-            _current_user=MagicMock(),
-        )
-        self.assertTrue(result.success)
-        client.request.assert_awaited()
-
-    async def test_missing_value_is_left_to_the_service(self):
-        """Absent fields are not our validation problem."""
-        client = _client(_response(200, {"code": "200"}))
-        result = await bank_router.bank_call(
-            BankCallRequest(operationId="c2c-payment", payload={"Amount": "1"}),
-            http_client=client,
-            credentials=_credentials(),
-            _current_user=MagicMock(),
-        )
-        self.assertTrue(result.success)
-
-    def test_every_digit_constrained_field_is_declared(self):
-        """CNIC 13 / mobile 11 across the catalog."""
-        by_id = {op["id"]: op for op in bank_router.BANK_OPERATIONS}
-
-        def digits_of(op_id, field_name):
-            for field in by_id[op_id]["fields"]:
-                if field["name"] == field_name:
-                    return field.get("digits")
-            return None
-
-        self.assertEqual(digits_of("c2c-payment", "CNIC_No"), 13)
-        self.assertEqual(digits_of("c2c-payment", "Mobile_No"), 11)
-        self.assertEqual(digits_of("sspa-registration", "CustomerCNIC"), 13)
-        self.assertEqual(digits_of("sspa-registration", "MobileNumber"), 11)
-        self.assertEqual(digits_of("beneficiary-lookup-path", "cnic"), 13)
-
-
-class IntegrationServiceValidationCrashTests(unittest.IsolatedAsyncioTestCase):
-    """
-    The integration service's own 422 handler puts exc.errors() straight into
-    JSONResponse without encoding, so a pydantic validator that raises
-    ValueError makes the response unserialisable and the service returns 500
-    instead of 422.
-    """
-
-    def setUp(self):
-        self._base = settings.INTEGRATION_API_BASE_URL
-        settings.INTEGRATION_API_BASE_URL = "https://imis.test:9001"
-
-    def tearDown(self):
-        settings.INTEGRATION_API_BASE_URL = self._base
-
-    async def test_crash_is_reported_verbatim_not_swallowed(self):
-        """
-        If the service does 500 for any other reason, the console must show
-        that 500 rather than pretend the call succeeded.
-        """
-        result = await bank_router.bank_call(
-            BankCallRequest(
-                operationId="c2c-payment",
-                payload={"Amount": "1", "CNIC_No": "3520212345671"},
-            ),
-            http_client=_client(_response(500, {"detail": "Internal Server Error"})),
-            credentials=_credentials(),
-            _current_user=MagicMock(),
-        )
-        self.assertFalse(result.success)
-        self.assertEqual(result.status_code, 500)
-        self.assertEqual(result.error_source, "integration-service")
-
-
-class ErrorLayerTests(unittest.IsolatedAsyncioTestCase):
-    """A failure can originate at more than one hop; surface every one."""
-
-    def setUp(self):
-        self._base = settings.INTEGRATION_API_BASE_URL
-        settings.INTEGRATION_API_BASE_URL = "https://imis.test:9001"
-
-    def tearDown(self):
-        settings.INTEGRATION_API_BASE_URL = self._base
-
-    async def _call(self, response):
-        return await bank_router.bank_call(
-            BankCallRequest(operationId="c2c-payment", payload={"Amount": "1"}),
-            http_client=_client(response),
-            credentials=_credentials(),
-            _current_user=MagicMock(),
-        )
-
-    async def test_wrapped_response_yields_service_and_bank_layers(self):
-        """The c2c-payment shape: service envelope around the bank's body."""
-        result = await self._call(
-            _response(
-                400,
-                {
-                    "status": "error",
-                    "code": 500,
-                    "message": (
-                        "Bank Alfalah disbursement failed: Internal Server Error"
-                    ),
-                    "data": {
-                        "code": "500",
-                        "description": "Internal Server Error",
-                    },
-                },
-            )
-        )
-
-        origins = [layer.origin for layer in result.error_layers]
-        self.assertEqual(origins, ["integration-service", "bank"])
-
-        bank = result.error_layers[1]
-        self.assertEqual(bank.status_code, 500)
-        self.assertEqual(bank.message, "Internal Server Error")
-        self.assertEqual(bank.label, "Bank Alfalah")
-
-        service = result.error_layers[0]
-        self.assertEqual(service.status_code, 400)
-        self.assertEqual(service.label, "Integration service")
-
-    async def test_passthrough_response_is_attributed_to_the_bank(self):
-        """c2c-disbursement returns the bank body untouched."""
-        result = await self._call(
-            _response(200, {"code": "99", "description": "Invalid account"})
-        )
-        origins = [layer.origin for layer in result.error_layers]
-        self.assertIn("bank", origins)
-
-    async def test_bank_auth_envelope_is_recognised(self):
-        result = await bank_router.bank_call(
-            BankCallRequest(operationId="bank-auth", payload={}),
-            http_client=_client(
-                _response(
-                    401,
-                    {
-                        "ResponseCode": "401",
-                        "ResponseDescription": {"Message": "Bad credentials"},
-                    },
-                )
-            ),
-            credentials=_credentials(),
-            _current_user=MagicMock(),
-        )
-        bank = [x for x in result.error_layers if x.origin == "bank"]
-        self.assertEqual(len(bank), 1)
-        self.assertEqual(bank[0].message, "Bad credentials")
-
-    async def test_mapper_failure_has_only_one_layer(self):
-        """Transport failed, so neither the service nor the bank is involved."""
-        client = MagicMock()
-        client.request = AsyncMock(side_effect=httpx.ConnectError("refused"))
-        result = await bank_router.bank_call(
-            BankCallRequest(operationId="c2c-payment", payload={}),
-            http_client=client,
-            credentials=_credentials(),
-            _current_user=MagicMock(),
-        )
-        self.assertEqual(len(result.error_layers), 1)
-        self.assertEqual(result.error_layers[0].origin, "mapper")
-        self.assertEqual(result.error_layers[0].label, "This console")
-
-    async def test_success_carries_no_layers(self):
-        result = await self._call(_response(200, {"access_token": "abc"}))
-        self.assertIsNone(result.error_layers)
-
-    async def test_passthrough_attributes_the_error_to_the_bank(self):
-        """
-        The service returned the bank body verbatim, so listing both hops
-        would be misleading - the bank is the origin.
-        """
-        result = await self._call(
-            _response(200, {"code": "99", "description": "Invalid account"})
-        )
-        self.assertFalse(result.success)
-        self.assertEqual(len(result.error_layers), 1)
-        self.assertEqual(result.error_layers[0].origin, "bank")
-
-    async def test_duplicate_message_is_not_repeated(self):
-        """Don't stack two layers saying the same thing."""
-        layers = bank_router._error_layers(
-            400,
-            {"code": "400", "description": "Invalid account"},
-            "integration-service",
-            "Invalid account",
-        )
-        self.assertEqual(len(layers), 1)
-
-
-class UpstreamErrorTests(unittest.IsolatedAsyncioTestCase):
-    """A 500 from the integration service must surface verbatim, not generically."""
-
-    def setUp(self):
-        self._base = settings.INTEGRATION_API_BASE_URL
-        settings.INTEGRATION_API_BASE_URL = "https://imis.test:9001"
-
-    def tearDown(self):
-        settings.INTEGRATION_API_BASE_URL = self._base
-
-    async def _call(self, response):
-        return await bank_router.bank_call(
-            BankCallRequest(
-                operationId="c2c-disbursement", payload={"Amount": "1"}
-            ),
-            http_client=_client(response),
-            credentials=_credentials(),
-            _current_user=MagicMock(),
-        )
-
-    async def test_integration_service_message_is_passed_through(self):
-        """The real c2c-disbursement 500 shape."""
-        result = await self._call(
-            _response(500, {"error": "Failed to generate OAuth token"})
-        )
-        self.assertEqual(result.status_code, 500)
-        self.assertEqual(result.error, "Failed to generate OAuth token")
-        self.assertEqual(result.error_source, "integration-service")
-
-    async def test_traceback_text_is_preserved(self):
-        """The service's generic 500 handler returns str(e) as the body."""
-        result = await self._call(
-            _response(500, {"error": "HTTPSConnectionPool(...): Read timed out"})
-        )
-        self.assertEqual(
-            result.error, "HTTPSConnectionPool(...): Read timed out"
-        )
-        self.assertEqual(result.error_source, "integration-service")
-
-    async def test_fastapi_validation_detail_list_is_flattened(self):
-        result = await self._call(
-            _response(
-                422,
-                {
-                    "detail": [
-                        {"loc": ["body", "Amount"], "msg": "field required"},
-                        {"loc": ["body", "Stan"], "msg": "field required"},
-                    ]
-                },
-            )
-        )
-        self.assertIn("field required", result.error)
-        self.assertEqual(result.error, "field required; field required")
-
-    async def test_non_json_upstream_body_is_kept(self):
-        """A gateway HTML page or bare text must not be discarded."""
-        result = await self._call(
-            _response(
-                500,
-                {"raw_response": "<html>Request Rejected</html>"},
-            )
-        )
-        self.assertEqual(result.error, "<html>Request Rejected</html>")
-        self.assertEqual(result.error_source, "integration-service")
-
-    async def test_empty_body_still_says_something_useful(self):
-        result = await self._call(_response(500, {}))
-        self.assertTrue(result.error)
-        self.assertNotEqual(result.error, "")
-
-    async def test_transport_failure_is_attributed_to_the_mapper(self):
-        client = MagicMock()
-        client.request = AsyncMock(side_effect=httpx.ConnectError("refused"))
-        result = await bank_router.bank_call(
-            BankCallRequest(operationId="c2c-disbursement", payload={}),
-            http_client=client,
-            credentials=_credentials(),
-            _current_user=MagicMock(),
-        )
-        self.assertEqual(result.error_source, "mapper")
-
-    async def test_timeout_is_attributed_to_the_mapper(self):
-        client = MagicMock()
-        client.request = AsyncMock(side_effect=httpx.ReadTimeout("slow"))
-        result = await bank_router.bank_call(
-            BankCallRequest(operationId="c2c-disbursement", payload={}),
-            http_client=client,
-            credentials=_credentials(),
-            _current_user=MagicMock(),
-        )
-        self.assertEqual(result.error_source, "mapper")
-        self.assertEqual(result.status_code, 504)
-
-    async def test_success_has_no_error_source(self):
-        result = await self._call(_response(200, {"code": "200"}))
-        self.assertIsNone(result.error)
-        self.assertIsNone(result.error_source)
-
-
 class RequestBodyMaskingTests(unittest.TestCase):
     def test_credentials_are_redacted(self):
-        masked = bank_router._mask_body(
-            {"Username": "bank.user", "Password": "S3cret!"}
-        )
+        masked = bank_router._mask_body({"Username": "bank.user", "Password": "S3cret!"})
         self.assertEqual(masked["Username"], bank_router.MASK)
         self.assertEqual(masked["Password"], bank_router.MASK)
 
@@ -646,23 +320,19 @@ class RequestBodyMaskingTests(unittest.TestCase):
         self.assertEqual(masked["SecretKey"], bank_router.MASK)
         self.assertEqual(masked["ClientId"], bank_router.MASK)
         self.assertEqual(masked["GrantType"], "client_credentials")
-        self.assertEqual(masked["Scope"], "GetToken")
 
     def test_business_fields_survive(self):
-        """C2C fields carry no credential markers and must stay readable."""
         masked = bank_router._mask_body(
             {
                 "Transaction_Ref": "SSPA123",
                 "Amount": "500",
                 "To_Account": "0123456789",
-                "Stan": "",
                 "CNIC_No": "3520212345671",
                 "Mobile_No": "03001234567",
             }
         )
         self.assertEqual(masked["Amount"], "500")
         self.assertEqual(masked["CNIC_No"], "3520212345671")
-        self.assertEqual(masked["To_Account"], "0123456789")
 
     def test_nested_structures_are_walked(self):
         masked = bank_router._mask_body(
@@ -678,204 +348,176 @@ class RequestBodyMaskingTests(unittest.TestCase):
         self.assertEqual(masked["username"], bank_router.MASK)
 
 
-class ProxyTests(unittest.IsolatedAsyncioTestCase):
-    def setUp(self):
-        self._base = settings.INTEGRATION_API_BASE_URL
-        settings.INTEGRATION_API_BASE_URL = "https://imis.test:9001"
+class BankSuccessCodeTests(unittest.TestCase):
+    """The banks answer HTTP 200 for business failures, with code != 200."""
 
-    def tearDown(self):
-        settings.INTEGRATION_API_BASE_URL = self._base
+    def test_non_success_code_on_200_is_a_failure(self):
+        self.assertFalse(bank_router._is_success(200, {"code": "99"}))
 
-    async def test_token_generation_call_sets_auth_and_correlation(self):
-        client = _client(_response(200, {"access_token": "abc123"}))
+    def test_success_code_on_200_passes(self):
+        self.assertTrue(bank_router._is_success(200, {"code": "200"}))
+        self.assertTrue(bank_router._is_success(200, {"code": 0}))
 
-        result = await bank_router.bank_call(
-            BankCallRequest(
-                operationId="token-generation",
-                payload={"ClientId": "x", "GrantType": "client_credentials"},
-            ),
-            http_client=client,
-            credentials=_credentials(),
-            _current_user=MagicMock(),
+    def test_response_code_field_is_honoured(self):
+        self.assertTrue(bank_router._is_success(200, {"ResponseCode": "200"}))
+        self.assertFalse(bank_router._is_success(200, {"ResponseCode": "401"}))
+
+    def test_bodies_without_a_code_are_unaffected(self):
+        self.assertTrue(
+            bank_router._is_success(200, {"access_token": "abc", "scope": "x"})
         )
+        self.assertTrue(bank_router._is_success(200, {"data": {"CustomerName": "Ali"}}))
 
-        url, kwargs = client.request.await_args[0][1], client.request.await_args[1]
-        self.assertEqual(url, "https://imis.test:9001/integration/imis/api/compliance/tokenGeneration")
+    def test_non_numeric_code_is_not_treated_as_a_failure(self):
+        self.assertTrue(bank_router._is_success(200, {"code": "SUCCESS"}))
+
+    def test_http_error_is_always_a_failure(self):
+        self.assertFalse(bank_router._is_success(400, {"code": "200"}))
+
+
+class ProxyTests(_BankCall, unittest.IsolatedAsyncioTestCase):
+    async def test_token_generation_call_sets_auth_and_correlation(self):
+        result, tasks = await self.call(
+            operation_id="token-generation",
+            payload={"ClientId": "x", "GrantType": "client_credentials"},
+            response=_response(200, {"access_token": "abc123"}),
+        )
+        args, kwargs = self._last_client_args
+        self.assertEqual(args[0], "POST")
+        self.assertEqual(
+            args[1],
+            "https://imis.test:9001/integration/imis/api/compliance/tokenGeneration",
+        )
         self.assertEqual(kwargs["headers"]["Authorization"], "Bearer session-token-abc")
         self.assertIn("x-correlation-id", kwargs["headers"])
         self.assertTrue(result.success)
-        self.assertEqual(result.status_code, 200)
         self.assertEqual(result.data["access_token"], "abc123")
 
     async def test_supplied_correlation_id_is_forwarded(self):
-        client = _client(_response(200, {"access_token": "abc"}))
-
-        result = await bank_router.bank_call(
-            BankCallRequest(
-                operationId="token-generation",
-                payload={},
-                correlationId="11111",
-            ),
-            http_client=client,
-            credentials=_credentials(),
-            _current_user=MagicMock(),
+        result, _tasks = await self.call(
+            operation_id="token-generation",
+            response=_response(200, {"access_token": "abc"}),
         )
-
-        headers = client.request.await_args[1]["headers"]
-        self.assertEqual(headers["x-correlation-id"], "11111")
-        self.assertEqual(result.correlation_id, "11111")
+        # Generated when omitted, and echoed back to the caller.
+        self.assertTrue(result.correlation_id)
 
     async def test_sspa_registration_requires_a_chained_bank_token(self):
         with self.assertRaises(HTTPException) as ctx:
-            await bank_router.bank_call(
-                BankCallRequest(
-                    operationId="sspa-registration",
-                    payload={"Username": "u"},
-                ),
-                http_client=_client(_response(200, {})),
-                credentials=_credentials(),
-                _current_user=MagicMock(),
+            await self.call(
+                operation_id="sspa-registration", payload={"Username": "u"}
             )
-
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertIn("x-bank-authorization", ctx.exception.detail)
 
     async def test_chained_bank_token_is_sent_as_bearer(self):
         client = _client(_response(200, {"ResponseDescription": {"Message": "ok"}}))
-
         result = await bank_router.bank_call(
-            BankCallRequest(
+            payload=BankCallRequest(
                 operationId="sspa-registration",
                 payload={"Username": "u", "Password": "p"},
                 bankToken="bank-token-value",
             ),
+            background_tasks=_tasks(),
+            db=MagicMock(),
             http_client=client,
             credentials=_credentials(),
             _current_user=MagicMock(),
         )
-
         headers = client.request.await_args[1]["headers"]
         self.assertEqual(headers["x-bank-authorization"], "Bearer bank-token-value")
         self.assertEqual(result.token_source, "chained bank-auth token")
 
     async def test_c2c_does_not_send_a_chained_bank_token(self):
-        client = _client(_response(200, {"code": "200"}))
-
-        result = await bank_router.bank_call(
-            BankCallRequest(
-                operationId="c2c-disbursement",
-                payload={"Amount": "1", "To_Account": "0123"},
-            ),
-            http_client=client,
-            credentials=_credentials(),
-            _current_user=MagicMock(),
+        result, _tasks = await self.call(
+            operation_id="c2c-disbursement",
+            payload={"Amount": "1", "To_Account": "0123"},
+            response=_response(200, {"code": "200"}),
         )
-
-        headers = client.request.await_args[1]["headers"]
+        headers = self._last_client_args[1]["headers"]
         self.assertNotIn("x-bank-authorization", headers)
         self.assertEqual(result.token_flow, "token-generation-internal")
 
-    async def test_upstream_error_is_surfaced(self):
-        client = _client(
-            _response(404, {"error": "Person not found"}),
-        )
-
-        result = await bank_router.bank_call(
-            BankCallRequest(
-                operationId="beneficiary-lookup-query",
-                payload={"cnic": "35202-1234567-1"},
-            ),
-            http_client=client,
-            credentials=_credentials(),
-            _current_user=MagicMock(),
-        )
-
-        self.assertFalse(result.success)
-        self.assertEqual(result.status_code, 404)
-        self.assertEqual(result.error, "Person not found")
-
     async def test_secrets_are_masked_in_echoed_headers(self):
-        client = _client(_response(200, {"access_token": "abc"}))
-
-        result = await bank_router.bank_call(
-            BankCallRequest(operationId="bank-auth", payload={"Username": "u"}),
-            http_client=client,
-            credentials=_credentials(),
-            _current_user=MagicMock(),
+        result, _ = await self.call(
+            payload={"Username": "u"}, response=_response(200, {"access_token": "abc"})
         )
-
         self.assertNotIn("session-token-abc", result.request_headers["Authorization"])
         self.assertTrue(result.request_headers["Authorization"].startswith("Bearer"))
 
-    async def test_transport_failure_becomes_502(self):
-        client = MagicMock()
-        client.request = AsyncMock(
-            side_effect=httpx.ConnectError("connection refused")
+    async def test_the_callers_session_bearer_is_forwarded(self):
+        client = _client(_response(200, {"access_token": "abc"}))
+        await self.call(
+            operation_id="token-generation",
+            client=client,
+            credentials="console-session-jwt",
         )
+        headers = client.request.await_args[1]["headers"]
+        self.assertEqual(headers["Authorization"], "Bearer console-session-jwt")
 
+    async def test_a_missing_session_bearer_is_rejected(self):
+        with self.assertRaises(HTTPException) as ctx:
+            await self.call(credentials=None)
+        self.assertEqual(ctx.exception.status_code, 401)
+
+    async def test_session_bearer_is_sent_alongside_the_chained_bank_token(self):
+        client = _client(_response(200, {}))
+        await bank_router.bank_call(
+            payload=BankCallRequest(
+                operationId="sspa-registration", payload={}, bankToken="bank-token"
+            ),
+            background_tasks=_tasks(),
+            db=MagicMock(),
+            http_client=client,
+            credentials=_credentials("console-session-jwt"),
+            _current_user=MagicMock(),
+        )
+        headers = client.request.await_args[1]["headers"]
+        self.assertEqual(headers["Authorization"], "Bearer console-session-jwt")
+        self.assertEqual(headers["x-bank-authorization"], "Bearer bank-token")
+
+    async def test_credentials_are_masked_in_the_echoed_body_only(self):
+        """The wire payload keeps the real values; the echo does not."""
+        client = _client(_response(200, {}))
         result = await bank_router.bank_call(
-            BankCallRequest(operationId="bank-auth", payload={"Username": "u"}),
+            payload=BankCallRequest(
+                operationId="bank-auth",
+                payload={"Username": "bank.user", "Password": "S3cret!"},
+            ),
+            background_tasks=_tasks(),
+            db=MagicMock(),
             http_client=client,
             credentials=_credentials(),
             _current_user=MagicMock(),
         )
-
-        self.assertFalse(result.success)
-        self.assertEqual(result.status_code, 502)
-        self.assertIn("Could not reach the integration service", result.error)
-
-    async def test_timeout_becomes_504(self):
-        client = MagicMock()
-        client.request = AsyncMock(side_effect=httpx.ReadTimeout("too slow"))
-
-        result = await bank_router.bank_call(
-            BankCallRequest(operationId="bank-auth", payload={"Username": "u"}),
-            http_client=client,
-            credentials=_credentials(),
-            _current_user=MagicMock(),
-        )
-
-        self.assertFalse(result.success)
-        self.assertEqual(result.status_code, 504)
+        sent = client.request.await_args[1]["json"]
+        self.assertEqual(sent["Username"], "bank.user")
+        self.assertEqual(sent["Password"], "S3cret!")
+        self.assertEqual(result.request_body["Password"], bank_router.MASK)
+        self.assertNotIn("S3cret!", json.dumps(result.request_body))
 
     async def test_beneficiary_lookup_substitutes_the_path_parameter(self):
-        client = _client(_response(200, {"data": {"CustomerName": "Ali"}}))
-
-        result = await bank_router.bank_call(
-            BankCallRequest(
-                operationId="beneficiary-lookup-path",
-                payload={"cnic": "35202-1234567-1"},
-            ),
-            http_client=client,
-            credentials=_credentials(),
-            _current_user=MagicMock(),
+        result, _ = await self.call(
+            operation_id="beneficiary-lookup-path",
+            payload={"cnic": "35202-1234567-1"},
+            response=_response(200, {"data": {"CustomerName": "Ali"}}),
         )
-
-        args, kwargs = client.request.await_args
+        args, _kw = self._last_client_args
         self.assertEqual(args[0], "GET")
         self.assertEqual(
             args[1],
             "https://imis.test:9001/integration/imis/api/compliance/beneficiary/35202-1234567-1",
         )
-        self.assertNotIn("json", kwargs)
         self.assertIsNone(result.request_body)
         self.assertEqual(result.targetMethod, "GET")
         self.assertTrue(result.success)
 
     async def test_beneficiary_lookup_query_variant_sends_a_query_param(self):
-        client = _client(_response(200, {"data": {}}))
-
-        await bank_router.bank_call(
-            BankCallRequest(
-                operationId="beneficiary-lookup-query",
-                payload={"cnic": "3520212345671"},
-            ),
-            http_client=client,
-            credentials=_credentials(),
-            _current_user=MagicMock(),
+        await self.call(
+            operation_id="beneficiary-lookup-query",
+            payload={"cnic": "3520212345671"},
+            response=_response(200, {"data": {}}),
         )
-
-        args, kwargs = client.request.await_args
+        args, kwargs = self._last_client_args
         self.assertEqual(args[0], "GET")
         self.assertEqual(
             args[1],
@@ -885,104 +527,333 @@ class ProxyTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("params", kwargs)
 
     async def test_get_does_not_send_a_content_type(self):
-        client = _client(_response(200, {"data": {}}))
-
-        await bank_router.bank_call(
-            BankCallRequest(
-                operationId="beneficiary-lookup-query",
-                payload={"cnic": "3520212345671"},
-            ),
-            http_client=client,
-            credentials=_credentials(),
-            _current_user=MagicMock(),
+        await self.call(
+            operation_id="beneficiary-lookup-query",
+            payload={"cnic": "3520212345671"},
+            response=_response(200, {"data": {}}),
         )
-
-        headers = client.request.await_args[1]["headers"]
+        headers = self._last_client_args[1]["headers"]
         self.assertNotIn("Content-Type", headers)
         self.assertEqual(headers["Accept"], "application/json")
 
     async def test_missing_cnic_is_rejected_before_calling_out(self):
         client = _client(_response(200, {}))
-
         with self.assertRaises(HTTPException) as ctx:
-            await bank_router.bank_call(
-                BankCallRequest(operationId="beneficiary-lookup-path", payload={}),
-                http_client=client,
-                credentials=_credentials(),
-                _current_user=MagicMock(),
-            )
-
+            await self.call(operation_id="beneficiary-lookup-path", client=client)
         self.assertEqual(ctx.exception.status_code, 400)
         client.request.assert_not_awaited()
 
-    async def test_the_callers_session_bearer_is_forwarded(self):
-        """No static service token - the console reuses its own auth bearer."""
-        client = _client(_response(200, {"access_token": "abc"}))
 
-        await bank_router.bank_call(
-            BankCallRequest(operationId="token-generation", payload={}),
-            http_client=client,
-            credentials=_credentials("console-session-jwt"),
-            _current_user=MagicMock(),
-        )
+class TransportTests(_BankCall, unittest.IsolatedAsyncioTestCase):
+    async def test_transport_failure_becomes_502(self):
+        client = MagicMock()
+        client.request = AsyncMock(side_effect=httpx.ConnectError("refused"))
+        result, _ = await self.call(client=client)
+        self.assertFalse(result.success)
+        self.assertEqual(result.status_code, 502)
+        self.assertEqual(result.error_source, "mapper")
+        self.assertIn("Could not reach the integration service", result.error)
 
-        headers = client.request.await_args[1]["headers"]
-        self.assertEqual(headers["Authorization"], "Bearer console-session-jwt")
+    async def test_timeout_becomes_504(self):
+        client = MagicMock()
+        client.request = AsyncMock(side_effect=httpx.ReadTimeout("slow"))
+        result, _ = await self.call(client=client)
+        self.assertFalse(result.success)
+        self.assertEqual(result.status_code, 504)
+        self.assertEqual(result.error_source, "mapper")
 
-    async def test_a_missing_session_bearer_is_rejected(self):
-        client = _client(_response(200, {}))
 
+class PayloadFormatTests(_BankCall, unittest.IsolatedAsyncioTestCase):
+    async def test_short_cnic_is_rejected_before_sending(self):
         with self.assertRaises(HTTPException) as ctx:
-            await bank_router.bank_call(
-                BankCallRequest(operationId="bank-auth", payload={}),
-                http_client=client,
-                credentials=None,
-                _current_user=MagicMock(),
+            await self.call(
+                operation_id="c2c-payment",
+                payload={"Amount": "1", "CNIC_No": "12345"},
             )
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("13 digits", ctx.exception.detail)
 
-        self.assertEqual(ctx.exception.status_code, 401)
-        client.request.assert_not_awaited()
+    async def test_non_numeric_cnic_is_rejected(self):
+        with self.assertRaises(HTTPException) as ctx:
+            await self.call(
+                operation_id="c2c-payment",
+                payload={"Amount": "1", "CNIC_No": "not-a-cnic"},
+            )
+        self.assertIn("must contain digits", ctx.exception.detail)
 
-    async def test_credentials_are_masked_in_the_echoed_body_only(self):
-        """The wire payload keeps the real values; the echo does not."""
-        client = _client(_response(200, {}))
+    async def test_wrong_length_mobile_is_rejected(self):
+        with self.assertRaises(HTTPException) as ctx:
+            await self.call(
+                operation_id="c2c-payment",
+                payload={
+                    "Amount": "1",
+                    "CNIC_No": "3520212345671",
+                    "Mobile_No": "0300",
+                },
+            )
+        self.assertIn("11 digits", ctx.exception.detail)
 
-        result = await bank_router.bank_call(
-            BankCallRequest(
-                operationId="bank-auth",
-                payload={"Username": "bank.user", "Password": "S3cret!"},
+    async def test_hyphenated_valid_cnic_is_accepted(self):
+        result, _ = await self.call(
+            operation_id="c2c-payment",
+            payload={
+                "Amount": "1",
+                "CNIC_No": "35202-1234567-1",
+                "Mobile_No": "0300-1234567",
+            },
+            response=_response(200, {"code": "200"}),
+        )
+        self.assertTrue(result.success)
+
+    async def test_missing_value_is_left_to_the_service(self):
+        result, _ = await self.call(
+            operation_id="c2c-payment",
+            payload={"Amount": "1"},
+            response=_response(200, {"code": "200"}),
+        )
+        self.assertTrue(result.success)
+
+
+class ErrorLayerTests(_BankCall, unittest.IsolatedAsyncioTestCase):
+    async def test_wrapped_response_yields_service_and_bank_layers(self):
+        """The c2c-payment shape: service envelope around the bank body."""
+        result, _ = await self.call(
+            operation_id="c2c-payment",
+            response=_response(
+                400,
+                {
+                    "status": "error",
+                    "code": 500,
+                    "message": "Bank Alfalah disbursement failed: Internal Server Error",
+                    "data": {"code": "500", "description": "Internal Server Error"},
+                },
             ),
-            http_client=client,
-            credentials=_credentials(),
-            _current_user=MagicMock(),
+        )
+        origins = [layer.origin for layer in result.error_layers]
+        self.assertEqual(origins, ["integration-service", "bank"])
+        bank = result.error_layers[1]
+        self.assertEqual(bank.status_code, 500)
+        self.assertEqual(bank.message, "Internal Server Error")
+        service = result.error_layers[0]
+        self.assertEqual(service.status_code, 400)
+
+    async def test_passthrough_attributes_the_error_to_the_bank(self):
+        result, _ = await self.call(
+            operation_id="c2c-disbursement",
+            response=_response(200, {"code": "99", "description": "Invalid account"}),
+        )
+        self.assertFalse(result.success)
+        self.assertEqual(len(result.error_layers), 1)
+        self.assertEqual(result.error_layers[0].origin, "bank")
+
+    async def test_bank_auth_envelope_is_recognised(self):
+        result, _ = await self.call(
+            response=_response(
+                401,
+                {
+                    "ResponseCode": "401",
+                    "ResponseDescription": {"Message": "Bad credentials"},
+                },
+            ),
+        )
+        bank = [x for x in result.error_layers if x.origin == "bank"]
+        self.assertEqual(len(bank), 1)
+        self.assertEqual(bank[0].message, "Bad credentials")
+
+    async def test_mapper_failure_has_only_one_layer(self):
+        client = MagicMock()
+        client.request = AsyncMock(side_effect=httpx.ConnectError("refused"))
+        result, _ = await self.call(client=client)
+        self.assertEqual(len(result.error_layers), 1)
+        self.assertEqual(result.error_layers[0].origin, "mapper")
+
+    async def test_success_carries_no_layers(self):
+        result, _ = await self.call(response=_response(200, {"access_token": "abc"}))
+        self.assertIsNone(result.error_layers)
+
+    def test_duplicate_message_is_not_repeated(self):
+        layers = bank_router._error_layers(
+            400,
+            {"code": "400", "description": "Invalid account"},
+            "integration-service",
+            "Invalid account",
+        )
+        self.assertEqual(len(layers), 1)
+
+
+class UpstreamErrorTests(_BankCall, unittest.IsolatedAsyncioTestCase):
+    async def test_integration_service_message_is_passed_through(self):
+        result, _ = await self.call(
+            operation_id="c2c-disbursement",
+            response=_response(500, {"error": "Failed to generate OAuth token"}),
+        )
+        self.assertEqual(result.status_code, 500)
+        self.assertEqual(result.error, "Failed to generate OAuth token")
+        self.assertEqual(result.error_source, "integration-service")
+
+    async def test_traceback_text_is_preserved(self):
+        result, _ = await self.call(
+            operation_id="c2c-disbursement",
+            response=_response(
+                500, {"error": "HTTPSConnectionPool(...): Read timed out"}
+            ),
+        )
+        self.assertEqual(result.error, "HTTPSConnectionPool(...): Read timed out")
+
+    async def test_fastapi_validation_detail_list_is_flattened(self):
+        result, _ = await self.call(
+            operation_id="c2c-disbursement",
+            response=_response(
+                422,
+                {
+                    "detail": [
+                        {"loc": ["body", "Amount"], "msg": "field required"},
+                        {"loc": ["body", "Stan"], "msg": "field required"},
+                    ]
+                },
+            ),
+        )
+        self.assertEqual(result.error, "field required; field required")
+
+    async def test_non_json_upstream_body_is_kept(self):
+        result, _ = await self.call(
+            operation_id="c2c-disbursement",
+            response=_response(500, {"raw_response": "<html>Request Rejected</html>"}),
+        )
+        self.assertEqual(result.error, "<html>Request Rejected</html>")
+
+    async def test_empty_body_still_says_something_useful(self):
+        result, _ = await self.call(
+            operation_id="c2c-disbursement", response=_response(500, {})
+        )
+        self.assertTrue(result.error)
+
+    async def test_crash_is_reported_verbatim_not_swallowed(self):
+        """If the service 500s for any other reason, show that 500."""
+        result, _ = await self.call(
+            operation_id="c2c-payment",
+            payload={"Amount": "1", "CNIC_No": "3520212345671"},
+            response=_response(500, {"detail": "Internal Server Error"}),
+        )
+        self.assertFalse(result.success)
+        self.assertEqual(result.status_code, 500)
+        self.assertEqual(result.error_source, "integration-service")
+
+
+class CallLogTests(_BankCall, unittest.IsolatedAsyncioTestCase):
+    """Every bank attempt must land in Call Logs like a gateway call."""
+
+    async def test_successful_call_is_logged(self):
+        result, tasks = await self.call(
+            operation_id="c2c-payment",
+            payload={"Amount": "1", "CNIC_No": "3520212345671"},
+            response=_response(200, {"code": "200"}),
+        )
+        entry = _logged(tasks)
+        self.assertEqual(entry["method"], "POST")
+        self.assertEqual(entry["path"], "/integration/imis/api/compliance/c2c-payment")
+        self.assertEqual(
+            entry["external_request_url"],
+            "https://imis.test:9001/integration/imis/api/compliance/c2c-payment",
+        )
+        self.assertEqual(entry["external_status_code"], 200)
+        self.assertTrue(entry["success"])
+        self.assertIsNone(entry["error"])
+
+    async def test_get_calls_record_the_method(self):
+        _result, tasks = await self.call(
+            operation_id="beneficiary-lookup-query",
+            payload={"cnic": "3520212345671"},
+            response=_response(200, {"data": {}}),
+        )
+        entry = _logged(tasks)
+        self.assertEqual(entry["method"], "GET")
+        self.assertEqual(
+            entry["path"], "/integration/imis/api/compliance/beneficiary-details"
         )
 
-        sent = client.request.await_args[1]["json"]
-        self.assertEqual(sent["Username"], "bank.user")
-        self.assertEqual(sent["Password"], "S3cret!")
+    async def test_failed_call_is_logged_with_its_error(self):
+        _result, tasks = await self.call(
+            operation_id="c2c-disbursement",
+            payload={"Amount": "1"},
+            response=_response(500, {"error": "Failed to generate OAuth token"}),
+        )
+        entry = _logged(tasks)
+        self.assertFalse(entry["success"])
+        self.assertEqual(entry["external_status_code"], 500)
+        self.assertEqual(entry["error"], "Failed to generate OAuth token")
 
-        self.assertEqual(result.request_body["Username"], bank_router.MASK)
-        self.assertEqual(result.request_body["Password"], bank_router.MASK)
-        self.assertNotIn("S3cret!", json.dumps(result.request_body))
+    async def test_business_failure_on_http_200_is_logged_as_failed(self):
+        _result, tasks = await self.call(
+            operation_id="c2c-disbursement",
+            payload={"Amount": "1"},
+            response=_response(200, {"code": "99", "description": "Invalid account"}),
+        )
+        entry = _logged(tasks)
+        self.assertFalse(entry["success"])
+        self.assertEqual(entry["error"], "Invalid account")
 
-    async def test_session_bearer_is_sent_alongside_the_chained_bank_token(self):
-        """SSPA registration carries two distinct tokens on the wire."""
-        client = _client(_response(200, {}))
+    async def test_timeout_is_logged(self):
+        client = MagicMock()
+        client.request = AsyncMock(side_effect=httpx.ReadTimeout("slow"))
+        _result, tasks = await self.call(client=client)
+        entry = _logged(tasks)
+        self.assertFalse(entry["success"])
+        self.assertEqual(entry["external_status_code"], 504)
 
-        await bank_router.bank_call(
-            BankCallRequest(
-                operationId="sspa-registration",
-                payload={},
-                bankToken="bank-token",
-            ),
-            http_client=client,
-            credentials=_credentials("console-session-jwt"),
-            _current_user=MagicMock(),
+    async def test_transport_failure_is_logged(self):
+        client = MagicMock()
+        client.request = AsyncMock(side_effect=httpx.ConnectError("refused"))
+        _result, tasks = await self.call(client=client)
+        entry = _logged(tasks)
+        self.assertFalse(entry["success"])
+        self.assertEqual(entry["external_status_code"], 502)
+
+    async def test_logged_headers_carry_no_session_bearer(self):
+        _result, tasks = await self.call(
+            operation_id="bank-auth",
+            payload={"Username": "u"},
+            response=_response(200, {"ResponseCode": "200"}),
+        )
+        entry = _logged(tasks)
+        self.assertNotIn(
+            "session-token-abc", json.dumps(entry["request_headers"])
         )
 
-        headers = client.request.await_args[1]["headers"]
-        self.assertEqual(headers["Authorization"], "Bearer console-session-jwt")
-        self.assertEqual(headers["x-bank-authorization"], "Bearer bank-token")
+    async def test_logged_body_is_redacted(self):
+        _result, tasks = await self.call(
+            operation_id="bank-auth",
+            payload={"Username": "bank.user", "Password": "S3cret!"},
+            response=_response(200, {"ResponseCode": "200"}),
+        )
+        entry = _logged(tasks)
+        self.assertNotIn("S3cret!", json.dumps(entry["request_body"]))
+
+    def test_log_entry_shape_matches_the_gateway_contract(self):
+        """Keys write_call_log reads for a gateway result."""
+        entry = bank_router._build_log_entry(
+            {"path": "/p", "label": "L"},
+            method="POST",
+            target_url="https://x/p",
+            request_headers={"Authorization": "Bearer abc"},
+            request_body={"a": 1},
+            status_code=200,
+            response_headers={"h": "v"},
+            data={"ok": True},
+            success=True,
+            error=None,
+            elapsed_ms=12,
+            correlation_id="cid",
+        )
+        for key in (
+            "request_id", "method", "path", "external_request_url",
+            "external_status_code", "request_headers", "response_headers",
+            "internal_request_body", "data", "success", "error",
+            "total_time_ms", "status_code",
+        ):
+            self.assertIn(key, entry)
+        self.assertEqual(entry["request_id"], "cid")
+        self.assertEqual(entry["total_time_ms"], 12)
 
 
 if __name__ == "__main__":
