@@ -27,54 +27,9 @@ import { alpha, useTheme } from "@mui/material/styles";
 import { useMemo, useState } from "react";
 
 import MethodChip from "../common/MethodChip";
+import { STATUS_TEXT, statusTone } from "../common/httpStatus";
 import StatusChip from "../common/StatusChip";
 import HeadersTable from "./HeadersTable";
-
-const STATUS_TEXT = {
-	200: "OK",
-	201: "Created",
-	202: "Accepted",
-	204: "No Content",
-	301: "Moved Permanently",
-	302: "Found",
-	304: "Not Modified",
-	400: "Bad Request",
-	401: "Unauthorized",
-	403: "Forbidden",
-	404: "Not Found",
-	405: "Method Not Allowed",
-	408: "Request Timeout",
-	409: "Conflict",
-	415: "Unsupported Media Type",
-	422: "Unprocessable Entity",
-	429: "Too Many Requests",
-	500: "Internal Server Error",
-	502: "Bad Gateway",
-	503: "Service Unavailable",
-	504: "Gateway Timeout",
-};
-
-function statusTone(code, palette) {
-	if (code == null) return { color: palette.text.disabled, label: "No status" };
-	if (code >= 200 && code < 300)
-		return {
-			color: palette.success.main,
-			label: STATUS_TEXT[code] || "Success",
-		};
-	if (code >= 300 && code < 400)
-		return { color: palette.info.main, label: STATUS_TEXT[code] || "Redirect" };
-	if (code >= 400 && code < 500)
-		return {
-			color: palette.warning.main,
-			label: STATUS_TEXT[code] || "Client error",
-		};
-	if (code >= 500)
-		return {
-			color: palette.error.main,
-			label: STATUS_TEXT[code] || "Server error",
-		};
-	return { color: palette.text.secondary, label: "Unknown" };
-}
 
 function toPrettyJson(value) {
 	if (value == null || value === "") return null;

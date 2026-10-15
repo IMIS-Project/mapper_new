@@ -9,16 +9,21 @@ are picked up:
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from backend.core.config import settings
+from backend.core.redaction import mask_sensitive
 from backend.db import schema_probe as audit_schema
 from backend.services.http_client import create_http_client
 from backend.services.scheduler_service import start_scheduler, stop_scheduler
 
 
 from backend.api.auth import router as auth_router
+from backend.api.bank_router import router as bank_router
 from backend.api.endpoints_router import router as endpoints_router
 from backend.api.export_import_router import router as export_import_router
 from backend.api.gateway_router import router as gateway_router
@@ -72,6 +77,21 @@ def create_app() -> FastAPI:
 
     app.add_middleware(RateLimitMiddleware)
 
+    @app.exception_handler(RequestValidationError)
+    async def redact_validation_errors(
+        request: Request, exc: RequestValidationError
+    ) -> JSONResponse:
+        """Strip secrets from Pydantic validation errors.
+
+        FastAPI quotes the offending input verbatim in ``detail[].input``,
+        which is how a bearer token ended up in a 422 body. Redact before it
+        reaches the caller or any log that records the response.
+        """
+        return JSONResponse(
+            status_code=422,
+            content={"detail": mask_sensitive(jsonable_encoder(exc.errors()))},
+        )
+
     app.include_router(auth_router, prefix="/api")
     app.include_router(endpoints_router, prefix="/api")
     app.include_router(parameters_router, prefix="/api")
@@ -80,6 +100,7 @@ def create_app() -> FastAPI:
     app.include_router(logs_router, prefix="/api")
     app.include_router(sftp_router, prefix="/api")
     app.include_router(scheduled_jobs_router, prefix="/api")
+    app.include_router(bank_router, prefix="/api")
     app.include_router(export_import_router, prefix="/api")
     app.include_router(mock_router, prefix="/api")
     app.include_router(webhook_router, prefix="/api")

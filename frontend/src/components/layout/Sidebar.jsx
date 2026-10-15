@@ -1,4 +1,5 @@
 import {
+	AccountBalance,
 	Add,
 	Api as ApiIcon,
 	ChevronLeft,
@@ -51,6 +52,11 @@ const NAV_ITEMS = [
 		label: "Gateway Tester",
 		to: "/gateway",
 		icon: <SendIcon fontSize="small" />,
+	},
+	{
+		label: "Bank APIs",
+		to: "/bank-apis",
+		icon: <AccountBalance fontSize="small" />,
 	},
 	{ label: "Call Logs", to: "/logs", icon: <ListAlt fontSize="small" /> },
 	{ label: "Cron Jobs", to: "/scheduled-jobs", icon: <Schedule fontSize="small" /> },

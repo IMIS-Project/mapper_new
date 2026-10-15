@@ -160,6 +160,15 @@ class Settings(BaseSettings):
 
     WEBHOOK_RETRY_DELAY_SECONDS: float = Field(default=0.25, ge=0)
 
+    # Bank Alfalah integration console. ``INTEGRATION_API_BASE_URL`` is the IMIS
+    # integration service root that /bank/operations paths resolve against.
+    #
+    # There is deliberately no static token here: the integration service
+    # validates the same central auth bearer the console already holds, so
+    # bank_call forwards the caller's own session token.
+    INTEGRATION_API_BASE_URL: str = ""
+    BANK_API_TIMEOUT_SECONDS: float = Field(default=60.0, gt=0)
+
     POLICY_MAX_ENDPOINTS: int = Field(default=10000, gt=0)
     DEDUP_TTL_SECONDS: float = Field(default=5.0, gt=0)
     DEDUP_MAX_ENTRIES: int = Field(default=1000, gt=0)
