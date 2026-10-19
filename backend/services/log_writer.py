@@ -165,6 +165,20 @@ async def write_call_log(
             CallStatusEnum.SUCCESS.value if succeeded else CallStatusEnum.FAILED.value
         )
 
+        # A two-leg producer (a scheduled mapping run) can supply both sides
+        # explicitly; the gateway keeps the derived envelope.
+        source_response = log_data.get("source_response")
+        if source_response is None:
+            source_response = _client_response(log_data)
+        else:
+            source_response = redact(source_response)
+
+        target_response = log_data.get("target_response")
+        if target_response is None:
+            target_response = redact(log_data.get("data") or {})
+        else:
+            target_response = redact(target_response)
+
         values = schema_probe.writable(
             {
                 "endpoint_id": log_data.get("endpoint_id"),
@@ -192,11 +206,11 @@ async def write_call_log(
                     or log_data.get("request_body")
                     or {}
                 ),
-                "source_response": _client_response(log_data),
+                "source_response": source_response,
                 "target_request_payload": redact(
                     log_data.get("external_request_body") or {}
                 ),
-                "target_response": redact(log_data.get("data") or {}),
+                "target_response": target_response,
                 "status": status,
                 "response_time_ms": (
                     log_data.get("external_response_time_ms")

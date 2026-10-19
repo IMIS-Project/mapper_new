@@ -148,6 +148,10 @@ class MappingJobOutcome:
     error: str | None
     request_headers: dict[str, str]
     response_headers: dict[str, str]
+    #: The transformed payload actually sent to the external API, kept for the
+    #: ``api_call_log`` mirror. Not part of the two-leg response envelope.
+    external_request_body: Any = None
+    external_query_params: Any = None
 
 
 def _stringify(headers: Any) -> dict[str, str]:
@@ -477,4 +481,6 @@ async def execute_mapping_job(
         error=error,
         request_headers=dict(internal.request_headers) if internal else {},
         response_headers=dict(internal.response_headers) if internal else {},
+        external_request_body=result.get("external_request_body"),
+        external_query_params=result.get("external_query_params"),
     )

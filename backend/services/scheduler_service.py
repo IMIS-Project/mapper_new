@@ -7,6 +7,7 @@ import json
 import logging
 import time
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import httpx
 from apscheduler.jobstores.base import JobLookupError
@@ -25,9 +26,11 @@ from backend.db.scheduler_session import (
     create_scheduler_tables,
     dispose_scheduler_engine,
 )
+from backend.db.session import AsyncSessionLocal
 from backend.models.scheduled_job import ScheduledJob, ScheduledJobRun
 from backend.schemas.scheduled_job import ScheduledJobCreate
 from backend.services import mapping_job_service
+from backend.services.log_writer import write_call_log
 from backend.services.scheduler_security import (
     UnsafeDestinationError,
     build_pinned_request,
@@ -429,6 +432,96 @@ def _safe_error(exc: Exception) -> str:
     return type(exc).__name__
 
 
+def _parsed_body(body: Any) -> Any:
+    """Parse a captured body as JSON when possible, otherwise keep it as-is."""
+    if body is None:
+        return None
+    if not isinstance(body, str):
+        return body
+    stripped = body.strip()
+    if not stripped:
+        return None
+    try:
+        return json.loads(stripped)
+    except (TypeError, ValueError):
+        return body
+
+
+def _api_call_log_data(
+    job: ScheduledJob | None,
+    run: ScheduledJobRun,
+    mapping: mapping_job_service.MappingJobOutcome | None,
+) -> dict[str, Any]:
+    """Translate a scheduler run into the ``log_data`` shape write_call_log reads."""
+    if mapping is not None:
+        external = mapping.external
+        internal = mapping.internal
+        return {
+            "endpoint_id": mapping.endpoint_id,
+            "method": run.method,
+            "path": run.url,
+            # Internal leg: the API the cron job delivers the payload to.
+            "request_headers": dict(internal.request_headers) if internal else {},
+            "response_headers": dict(internal.response_headers) if internal else {},
+            "internal_request_body": external.body,
+            "status_code": mapping.status_code,
+            "data": _parsed_body(internal.body) if internal else None,
+            "source_response": _parsed_body(internal.body) if internal else None,
+            # External leg: the API the mapper calls first.
+            "external_request_url": external.url,
+            "external_request_method": external.method,
+            "external_request_headers": dict(external.request_headers),
+            "external_request_body": mapping.external_request_body or {},
+            "external_query_params": mapping.external_query_params,
+            "external_response_headers": dict(external.response_headers),
+            "external_status_code": external.status_code,
+            "external_response_time_ms": external.duration_ms,
+            "target_response": external.body,
+            "success": mapping.success,
+            "error": mapping.error,
+            "total_time_ms": run.duration_ms,
+            "status": "SUCCESS" if mapping.success else "FAILED",
+        }
+
+    job_body = _parsed_body(job.body) if job is not None else None
+    return {
+        "endpoint_id": None,
+        "method": run.method,
+        "path": run.url,
+        "request_headers": load_headers(run.request_headers) or {},
+        "response_headers": load_headers(run.response_headers) or {},
+        "request_body": job_body if isinstance(job_body, (dict, list)) else None,
+        "status_code": run.status_code,
+        "data": _parsed_body(run.response_body),
+        "success": run.success,
+        "error": run.error,
+        "total_time_ms": run.duration_ms,
+        "status": "SUCCESS" if run.success else "FAILED",
+    }
+
+
+async def _mirror_to_api_call_log(
+    job: ScheduledJob | None,
+    run: ScheduledJobRun,
+    mapping: mapping_job_service.MappingJobOutcome | None,
+) -> None:
+    """Best-effort copy of one scheduled run into the main ``api_call_log``.
+
+    The scheduler's SQLite history remains the source of truth for the cron
+    UI. This mirror makes scheduled traffic visible in the log dashboard next
+    to every other mapped call. A logging failure must never fail the job.
+    """
+    try:
+        async with AsyncSessionLocal() as db:
+            await write_call_log(db, _api_call_log_data(job, run, mapping))
+    except Exception:
+        logger.warning(
+            "Could not mirror scheduled job %s into api_call_log",
+            run.job_id,
+            exc_info=True,
+        )
+
+
 async def execute_scheduled_job(job_id: str, url: str, method: str) -> ScheduledJobRun:
     global _http_client
     started = time.perf_counter()
@@ -442,6 +535,8 @@ async def execute_scheduled_job(job_id: str, url: str, method: str) -> Scheduled
     client = _http_client
     temporary_client = None
     semaphore = _execution_semaphore
+    row: ScheduledJob | None = None
+    mapping: mapping_job_service.MappingJobOutcome | None = None
     if semaphore is None:
         semaphore = asyncio.Semaphore(settings.SCHEDULER_MAX_CONCURRENT_JOBS)
     try:
@@ -544,6 +639,7 @@ async def execute_scheduled_job(job_id: str, url: str, method: str) -> Scheduled
         ran_at=datetime.now(timezone.utc),
     )
     await _persist_run(run)
+    await _mirror_to_api_call_log(row, run, mapping)
     return run
 
 

@@ -41,7 +41,7 @@ from backend.db.scheduler_session import (
     dispose_scheduler_engine,
 )
 from backend.db.session import AsyncSessionLocal, engine
-from backend.models import ApiEndpoint, ParameterMapping
+from backend.models import ApiCallLog, ApiEndpoint, ParameterMapping
 from backend.models.scheduled_job import ScheduledJob
 from backend.services import mapping_job_service, scheduler_service
 
@@ -55,6 +55,7 @@ INTERNAL_URL = "'''
 # Every statement issued against the application database is recorded so a
 # test can assert that the mapping tables are only ever read.
 STATEMENTS = []
+STATEMENT_SQL = []
 
 _READ_ONLY = {"SELECT", "PRAGMA", "BEGIN", "COMMIT", "ROLLBACK", "ROLLBACK TO SAVEPOINT", "SAVEPOINT", "RELEASE SAVEPOINT"}
 
@@ -62,14 +63,26 @@ _READ_ONLY = {"SELECT", "PRAGMA", "BEGIN", "COMMIT", "ROLLBACK", "ROLLBACK TO SA
 @event.listens_for(engine.sync_engine, "before_cursor_execute")
 def _record(conn, cursor, statement, parameters, context, executemany):
     STATEMENTS.append(statement.strip().split()[0].upper())
+    STATEMENT_SQL.append(statement)
 
 
 def reset_statements():
     STATEMENTS.clear()
+    STATEMENT_SQL.clear()
 
 
 def writes():
-    return [verb for verb in STATEMENTS if verb not in _READ_ONLY]
+    """Writes to the mapping tables.
+
+    ``api_call_log`` is deliberately excluded: every scheduled run mirrors its
+    audit row there, and that insert must not be mistaken for the mapping
+    configuration being modified.
+    """
+    return [
+        verb
+        for verb, sql in zip(STATEMENTS, STATEMENT_SQL)
+        if verb not in _READ_ONLY and "api_call_log" not in sql.lower()
+    ]
 
 
 async def seed_mapping(*, active=True):
@@ -158,7 +171,11 @@ async def main():
     async with engine.begin() as connection:
         await connection.run_sync(
             Base.metadata.create_all,
-            tables=[ApiEndpoint.__table__, ParameterMapping.__table__],
+            tables=[
+                ApiEndpoint.__table__,
+                ParameterMapping.__table__,
+                ApiCallLog.__table__,
+            ],
         )
     try:
 """
@@ -386,6 +403,53 @@ class MappingCronTests(unittest.TestCase):
                 assert not run.success
                 assert run.status_code == 500
                 assert run.error == "HTTP 500", run.error
+
+            await check()
+            """
+        )
+
+    def test_scheduled_run_is_mirrored_into_api_call_log(self):
+        run_isolated(
+            """
+            async def check():
+                endpoint_id = await seed_mapping()
+
+                async def handler(request):
+                    if str(request.url).startswith(EXTERNAL_URL):
+                        return httpx.Response(200, content=b'{"ref_no": "EXT-9"}', request=request)
+                    return httpx.Response(
+                        401,
+                        content=b'{"detail": "Unauthorized: Invalid or missing token"}',
+                        request=request,
+                    )
+
+                await create_job()
+                async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+                    scheduler_service._http_client = client
+                    run = await scheduler_service.execute_scheduled_job(
+                        "mapped-job", INTERNAL_URL, "POST"
+                    )
+                assert not run.success and run.status_code == 401, (run.status_code, run.error)
+
+                async with AsyncSessionLocal() as db:
+                    rows = list((await db.execute(select(ApiCallLog))).scalars().all())
+
+                assert len(rows) == 1, rows
+                row = rows[0]
+                assert row.endpoint_id == endpoint_id, (row.endpoint_id, endpoint_id)
+                assert row.client_status_code == 401
+                assert row.upstream_status_code == 200
+                assert row.status == "FAILED"
+                assert row.error_message == "HTTP 401"
+                assert row.source_request_payload == {"ref_no": "EXT-9"}
+                assert row.target_request_payload == {
+                    "ref_no": "REF-1",
+                    "status": "OPEN",
+                }
+                assert row.source_response["detail"] == "Unauthorized: Invalid or missing token"
+                assert row.target_response == {"ref_no": "EXT-9"}
+                assert row.source_response_headers, row.source_response_headers
+                assert row.target_response_headers, row.target_response_headers
 
             await check()
             """
