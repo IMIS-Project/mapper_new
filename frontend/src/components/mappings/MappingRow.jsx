@@ -163,7 +163,7 @@ export default function MappingRow({
 				<TextField
 					fullWidth
 					size="small"
-					placeholder="source.field"
+					placeholder="external.field"
 					value={mapping.sourceField}
 					onChange={(event) =>
 						onChange(mapping.id, { sourceField: event.target.value })
@@ -171,7 +171,7 @@ export default function MappingRow({
 					disabled={readOnly}
 					sx={fieldSx}
 					slotProps={{
-						htmlInput: { "aria-label": `Source field, row ${index + 1}` },
+						htmlInput: { "aria-label": `External field, row ${index + 1}` },
 					}}
 				/>
 			</TableCell>
@@ -180,7 +180,7 @@ export default function MappingRow({
 				<TextField
 					fullWidth
 					size="small"
-					placeholder="target.field"
+					placeholder="internal.field"
 					value={mapping.targetField}
 					onChange={(event) =>
 						onChange(mapping.id, { targetField: event.target.value })
@@ -188,7 +188,7 @@ export default function MappingRow({
 					disabled={readOnly}
 					sx={fieldSx}
 					slotProps={{
-						htmlInput: { "aria-label": `Target field, row ${index + 1}` },
+						htmlInput: { "aria-label": `Internal field, row ${index + 1}` },
 					}}
 				/>
 			</TableCell>

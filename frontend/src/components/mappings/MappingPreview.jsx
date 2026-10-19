@@ -221,7 +221,7 @@ export default function MappingPreview({
 									className="mono-label"
 									sx={{ color: "text.disabled", fontSize: "0.55rem", mb: 0.75 }}
 								>
-									Source
+									Internal
 								</Typography>
 								<Box
 									sx={{
@@ -240,7 +240,7 @@ export default function MappingPreview({
 										wordBreak: "break-all",
 									}}
 								>
-									{payload?.sourceUrl || "—"}
+									{payload?.targetUrl || "—"}
 								</Typography>
 							</Box>
 
@@ -258,7 +258,7 @@ export default function MappingPreview({
 									className="mono-label"
 									sx={{ color: "text.disabled", fontSize: "0.55rem", mb: 0.75 }}
 								>
-									Target
+									External
 								</Typography>
 								<Box
 									sx={{
@@ -277,7 +277,7 @@ export default function MappingPreview({
 										wordBreak: "break-all",
 									}}
 								>
-									{payload?.targetUrl || "—"}
+									{payload?.sourceUrl || "—"}
 								</Typography>
 							</Box>
 						</Box>
@@ -407,9 +407,9 @@ export default function MappingPreview({
 											<TableCell sx={{ ...HEAD_CELL_SX, width: 44 }}>
 												#
 											</TableCell>
-											<TableCell sx={HEAD_CELL_SX}>Source field</TableCell>
+											<TableCell sx={HEAD_CELL_SX}>External field</TableCell>
 											<TableCell sx={{ ...HEAD_CELL_SX, width: 30 }} />
-											<TableCell sx={HEAD_CELL_SX}>Target field</TableCell>
+											<TableCell sx={HEAD_CELL_SX}>Internal field</TableCell>
 											<TableCell sx={{ ...HEAD_CELL_SX, width: 96 }}>
 												Type
 											</TableCell>

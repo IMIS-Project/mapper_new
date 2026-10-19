@@ -262,7 +262,7 @@ export default function GatewayTester({ onSend, loading = false }) {
 
 		const errors = {};
 		const url = targetUrl.trim();
-		if (!url) errors.targetUrl = "Target URL is required.";
+		if (!url) errors.targetUrl = "External URL is required.";
 		else if (!/^(https?:\/\/|\/)/i.test(url)) {
 			errors.targetUrl =
 				'Use an absolute URL (http:// or https://) or a registered path starting with "/".';
@@ -368,7 +368,7 @@ export default function GatewayTester({ onSend, loading = false }) {
 					onChange={(_event, value) => {
 						if (value) setMode(value);
 					}}
-					aria-label="Target selection mode"
+					aria-label="External URL selection mode"
 				>
 					<ToggleButton
 						value="endpoint"
@@ -407,7 +407,7 @@ export default function GatewayTester({ onSend, loading = false }) {
 				onKeyDown={handleKeyDown}
 				sx={{ p: 2.25 }}
 			>
-				<StepLabel index="01">Target</StepLabel>
+				<StepLabel index="01">External</StepLabel>
 
 				{mode === "endpoint" ? (
 					<>
@@ -507,7 +507,7 @@ export default function GatewayTester({ onSend, loading = false }) {
 									className="mono-label"
 									sx={{ color: "text.disabled", fontSize: "0.52rem" }}
 								>
-									Source
+									Internal
 								</Typography>
 								<Typography
 									sx={{
@@ -548,7 +548,7 @@ export default function GatewayTester({ onSend, loading = false }) {
 					<TextField
 						fullWidth
 						size="small"
-						label="Target URL"
+						label="External URL"
 						placeholder="/ref_crp_beneficiary"
 						value={targetUrl}
 						onChange={(event) => {
@@ -618,7 +618,7 @@ export default function GatewayTester({ onSend, loading = false }) {
 						fieldErrors.endpointId ||
 						(mode === "endpoint"
 							? "Auto-filled from the selected endpoint."
-							: "Paste the UUID, or just type the target URL above to auto-map.")
+							: "Paste the UUID, or just type the external URL above to auto-map.")
 					}
 					slotProps={{
 						input: { sx: { fontFamily: codeFont, fontSize: "0.74rem" } },

@@ -4,6 +4,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from backend.models.enums import ContentTypeEnum, MethodEnum, ProtocolEnum
+from backend.schemas.parameter import ParameterResponse
 
 
 class EndpointCreate(BaseModel):
@@ -111,6 +112,10 @@ class EndpointResponse(BaseModel):
     updated_by: int | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+
+    # Eager-loaded by ``endpoint_service``; read-only consumers (the cron job
+    # picker) need the field names without a second round trip.
+    parameters: list[ParameterResponse] = []
 
 
 class MappingItem(BaseModel):

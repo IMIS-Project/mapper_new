@@ -71,15 +71,17 @@ export function parametersToRows(parameters = []) {
 
 export function validateMappingForm(form = {}, mappings = []) {
 	const errors = {};
+	// `sourceUrl` is the external API (the upstream the gateway actually
+	// calls) and `targetUrl` the internal route; see gateway_engine.
 	const sourceUrl = String(form.sourceUrl ?? "").trim();
 	const targetUrl = String(form.targetUrl ?? "").trim();
 
-	if (!sourceUrl) errors.sourceUrl = "Source URL is required.";
-	if (!targetUrl) errors.targetUrl = "Target URL is required.";
+	if (!targetUrl) errors.targetUrl = "Internal URL is required.";
+	if (!sourceUrl) errors.sourceUrl = "External URL is required.";
 	if (!METHOD_OPTIONS.includes(form.sourceMethod))
-		errors.sourceMethod = "Pick a source method.";
+		errors.sourceMethod = "Pick an internal method.";
 	if (!METHOD_OPTIONS.includes(form.targetMethod))
-		errors.targetMethod = "Pick a target method.";
+		errors.targetMethod = "Pick an external method.";
 
 	const activeRows = mappings.filter(
 		(row) => row.enabled && (row.sourceField.trim() || row.targetField.trim()),
@@ -92,7 +94,7 @@ export function validateMappingForm(form = {}, mappings = []) {
 		activeRows.some((row) => !row.sourceField.trim() || !row.targetField.trim())
 	) {
 		errors.mappings =
-			"Every enabled row needs both a source and a target field.";
+			"Every enabled row needs both an internal and an external field.";
 	}
 
 	return { valid: Object.keys(errors).length === 0, errors };
@@ -108,9 +110,10 @@ export function buildAutoDescription(form = {}, mappings = []) {
 	);
 	const enabled = filled.filter((row) => row.enabled);
 
-	const route = `${sourceMethod || "—"} ${String(sourceUrl ?? "").trim() || "…"} → ${
+	// Rendered inbound -> outbound, the way the request actually flows.
+	const route = `${sourceMethod || "—"} ${String(targetUrl ?? "").trim() || "…"} → ${
 		targetMethod || "—"
-	} ${String(targetUrl ?? "").trim() || "…"}`;
+	} ${String(sourceUrl ?? "").trim() || "…"}`;
 
 	if (enabled.length === 0) return `${route} — no enabled field mappings yet`;
 

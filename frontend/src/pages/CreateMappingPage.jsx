@@ -352,20 +352,20 @@ export default function CreateMappingPage() {
 			<Box component={motion.div} variants={itemVariants}>
 				<SectionCard
 					step="01"
-					title="Source API"
+					title="Internal API"
 					caption="The inbound route the gateway listens on."
 				>
 					<Box sx={{ maxWidth: { md: 640 } }}>
 						<RouteComposer
-							urlLabel="Source URL"
+							urlLabel="Internal URL"
 							placeholder="https://api.example.com/orders"
 							method={form.sourceMethod}
 							onMethodChange={(next) => updateForm({ sourceMethod: next })}
-							url={form.sourceUrl}
-							onUrlChange={(next) => updateForm({ sourceUrl: next })}
-							error={errors.sourceUrl}
+							url={form.targetUrl}
+							onUrlChange={(next) => updateForm({ targetUrl: next })}
+							error={errors.targetUrl}
 							helperText={
-								errors.sourceUrl || "Full URL or path of the incoming endpoint."
+								errors.targetUrl || "Full URL or path of the incoming endpoint."
 							}
 						/>
 					</Box>
@@ -376,20 +376,20 @@ export default function CreateMappingPage() {
 			<Box component={motion.div} variants={itemVariants}>
 				<SectionCard
 					step="02"
-					title="Target API"
+					title="External API"
 					caption="Where the mapped payload is forwarded."
 				>
 					<Box sx={{ maxWidth: { md: 640 } }}>
 						<RouteComposer
-							urlLabel="Target URL"
-							placeholder="https://backend.internal/v2/orders"
+							urlLabel="External URL"
+							placeholder="https://api.partner.example/v2/orders"
 							method={form.targetMethod}
 							onMethodChange={(next) => updateForm({ targetMethod: next })}
-							url={form.targetUrl}
-							onUrlChange={(next) => updateForm({ targetUrl: next })}
-							error={errors.targetUrl}
+							url={form.sourceUrl}
+							onUrlChange={(next) => updateForm({ sourceUrl: next })}
+							error={errors.sourceUrl}
 							helperText={
-								errors.targetUrl ||
+								errors.sourceUrl ||
 								"Calls are routed by this URL + method pair."
 							}
 						/>
@@ -402,7 +402,7 @@ export default function CreateMappingPage() {
 				<SectionCard
 					step="03"
 					title="Upstream authentication"
-					caption="Optional — the gateway fetches a bearer token before calling the target."
+					caption="Optional — the gateway fetches a bearer token before calling the external API."
 					action={
 						<Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
 							<Typography

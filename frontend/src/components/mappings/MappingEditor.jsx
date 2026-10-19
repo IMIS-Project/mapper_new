@@ -170,8 +170,8 @@ export default function MappingEditor({
 								<SwapVert sx={{ fontSize: 14 }} />
 							</Tooltip>
 						</TableCell>
-						<TableCell sx={HEAD_CELL_SX}>Source field</TableCell>
-						<TableCell sx={HEAD_CELL_SX}>Target field</TableCell>
+						<TableCell sx={HEAD_CELL_SX}>External field</TableCell>
+						<TableCell sx={HEAD_CELL_SX}>Internal field</TableCell>
 						<TableCell sx={HEAD_CELL_SX}>Type</TableCell>
 						<TableCell sx={HEAD_CELL_SX}>Data type</TableCell>
 						<TableCell align="center" sx={{ ...HEAD_CELL_SX, width: 74 }}>

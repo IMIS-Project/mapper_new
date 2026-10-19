@@ -220,7 +220,7 @@ export default function GatewayPage() {
 					Gateway · Live runner
 				</Typography>
 				<Typography variant="h5" sx={{ mt: 0.5 }}>
-					Exercise mappings against the real target
+					Exercise mappings against the real external API
 				</Typography>
 				<Typography
 					variant="body2"

@@ -15,6 +15,17 @@ export const getParameters = async (endpointId) => {
 	return response.data;
 };
 
+/**
+ * Read-only listing used by the cron job picker. The scheduler screen never
+ * writes to the mapping database, so this is a plain SELECT.
+ */
+export const listMappings = async (search) => {
+	const response = await api.get("/api-endpoints", {
+		params: { limit: 500, ...(search ? { search } : {}) },
+	});
+	return response.data;
+};
+
 export const saveCompleteMapping = async (data) => {
 	const response = await api.post("/mappings/complete", data);
 	return response.data;
@@ -39,6 +50,7 @@ export default {
 	getEndpoints,
 	getEndpoint,
 	getParameters,
+	listMappings,
 	saveCompleteMapping,
 	updateCompleteMapping,
 	deleteEndpoint,

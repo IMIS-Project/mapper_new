@@ -27,6 +27,7 @@ from backend.db.scheduler_session import (
 )
 from backend.models.scheduled_job import ScheduledJob, ScheduledJobRun
 from backend.schemas.scheduled_job import ScheduledJobCreate
+from backend.services import mapping_job_service
 from backend.services.scheduler_security import (
     UnsafeDestinationError,
     build_pinned_request,
@@ -90,6 +91,15 @@ def _decode_body(payload: bytes) -> str:
     return payload.decode("utf-8", errors="replace")
 
 
+def _capture_body(text: str) -> tuple[str | None, bool]:
+    """Trim an already-serialised payload to the stored response limit."""
+    limit = int(settings.SCHEDULER_MAX_RESPONSE_BODY_BYTES)
+    encoded = text.encode("utf-8")
+    if len(encoded) <= limit:
+        return text, False
+    return encoded[:limit].decode("utf-8", errors="replace"), True
+
+
 def guess_content_type(body: str) -> str:
     """Pick a default Content-Type for a body the user did not label."""
     if body.lstrip()[:1] in "{[":
@@ -97,6 +107,27 @@ def guess_content_type(body: str) -> str:
     if body.lstrip()[:1] == "<":
         return "application/xml"
     return "text/plain; charset=utf-8"
+
+
+async def is_mapping_backed(url: str, method: str) -> bool:
+    """True when ``url``/``method`` resolve to an active API mapping.
+
+    Such a job dials destinations an administrator registered in
+    ``api_endpoint`` — the same rows the gateway already calls on every inbound
+    request — so the allowlist that guards user-typed scheduler URLs does not
+    apply to them. The lookup itself is a plain SELECT.
+    """
+    try:
+        endpoint = await mapping_job_service.resolve_endpoint(url, method)
+    except Exception:
+        logger.warning(
+            "Could not check whether %s %s is mapping-backed",
+            method,
+            url,
+            exc_info=True,
+        )
+        return False
+    return endpoint is not None
 
 
 async def start_scheduler(http_client: httpx.AsyncClient) -> None:
@@ -197,7 +228,8 @@ async def reconcile_jobs() -> None:
             configured = set()
             for row in rows:
                 try:
-                    await validate_destination_async(row.url)
+                    if not await is_mapping_backed(row.url, row.method):
+                        await validate_destination_async(row.url)
                     build_trigger(cron=row.cron, interval_seconds=row.interval_seconds)
                 except (UnsafeDestinationError, ValueError):
                     row.enabled = False
@@ -230,7 +262,8 @@ async def create_job(
     count_result = await db.execute(select(func.count(ScheduledJob.job_id)))
     if int(count_result.scalar_one() or 0) >= settings.SCHEDULER_MAX_JOBS:
         raise SchedulerLimitError("Scheduled job limit reached")
-    await validate_destination_async(payload.url)
+    if not await is_mapping_backed(payload.url, payload.method):
+        await validate_destination_async(payload.url)
     build_trigger(cron=payload.cron, interval_seconds=payload.interval_seconds)
     row = ScheduledJob(
         job_id=payload.job_id,
@@ -341,7 +374,8 @@ async def set_job_enabled(db: AsyncSession, job_id: str, enabled: bool) -> Sched
         row.interval_seconds,
     )
     if enabled:
-        await validate_destination_async(row.url)
+        if not await is_mapping_backed(row.url, row.method):
+            await validate_destination_async(row.url)
         _add_live_job(row)
     else:
         try:
@@ -417,51 +451,76 @@ async def execute_scheduled_job(job_id: str, url: str, method: str) -> Scheduled
             headers = load_headers(row.headers) if row is not None else None
             body = row.body if row is not None else None
 
-            addresses = await validate_destination_async(url)
-            request_url, pinned_headers, extensions = build_pinned_request(
-                url, addresses[0] if addresses else None
-            )
             if client is None or client.is_closed:
                 temporary_client = httpx.AsyncClient(
                     timeout=float(settings.SCHEDULER_REQUEST_TIMEOUT_SECONDS),
                     follow_redirects=False,
                 )
                 client = temporary_client
-            send_headers = dict(pinned_headers)
-            send_headers.update(headers or {})
-            request_kwargs = {}
-            if body is not None:
-                request_kwargs["content"] = body.encode("utf-8")
-                send_headers.setdefault("content-type", guess_content_type(body))
-            request_headers = dict(send_headers)
-            async with client.stream(
-                method,
-                request_url,
-                headers=send_headers,
-                extensions=extensions,
-                follow_redirects=False,
-                timeout=float(settings.SCHEDULER_REQUEST_TIMEOUT_SECONDS),
-                **request_kwargs,
-            ) as response:
-                status_code = response.status_code
-                response_headers = dict(response.headers)
-                limit = int(settings.SCHEDULER_MAX_RESPONSE_BODY_BYTES)
-                buffer = bytearray()
-                async for chunk in response.aiter_bytes():
-                    remaining = limit - len(buffer)
-                    if remaining <= 0:
-                        response_body_truncated = True
-                        break
-                    buffer.extend(chunk[:remaining])
-                    if len(chunk) > remaining:
-                        response_body_truncated = True
-                        break
-                response_size = len(buffer)
-                response_body = _decode_body(bytes(buffer)) if buffer else None
-                if 300 <= status_code < 400:
-                    error = "Redirect responses are not followed"
-                elif status_code >= 400:
-                    error = f"HTTP {status_code}"
+
+            # A job whose URL + method match an active mapping runs the mapped
+            # flow instead: the external API is called first and its response
+            # is forwarded verbatim to the internal API. Both tables are only
+            # ever SELECTed.
+            mapping = await mapping_job_service.execute_mapping_job(
+                internal_url=url,
+                method=method,
+                headers=headers,
+                body=body,
+                http_client=client,
+            )
+
+            if mapping is not None:
+                status_code = mapping.status_code
+                error = mapping.error
+                request_headers = mapping.request_headers
+                response_headers = mapping.response_headers
+                response_body, response_body_truncated = _capture_body(
+                    json.dumps(mapping.payload, ensure_ascii=False, default=str)
+                )
+                response_size = (
+                    len(response_body.encode("utf-8")) if response_body else 0
+                )
+            else:
+                addresses = await validate_destination_async(url)
+                request_url, pinned_headers, extensions = build_pinned_request(
+                    url, addresses[0] if addresses else None
+                )
+                send_headers = dict(pinned_headers)
+                send_headers.update(headers or {})
+                request_kwargs = {}
+                if body is not None:
+                    request_kwargs["content"] = body.encode("utf-8")
+                    send_headers.setdefault("content-type", guess_content_type(body))
+                request_headers = dict(send_headers)
+                async with client.stream(
+                    method,
+                    request_url,
+                    headers=send_headers,
+                    extensions=extensions,
+                    follow_redirects=False,
+                    timeout=float(settings.SCHEDULER_REQUEST_TIMEOUT_SECONDS),
+                    **request_kwargs,
+                ) as response:
+                    status_code = response.status_code
+                    response_headers = dict(response.headers)
+                    limit = int(settings.SCHEDULER_MAX_RESPONSE_BODY_BYTES)
+                    buffer = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        remaining = limit - len(buffer)
+                        if remaining <= 0:
+                            response_body_truncated = True
+                            break
+                        buffer.extend(chunk[:remaining])
+                        if len(chunk) > remaining:
+                            response_body_truncated = True
+                            break
+                    response_size = len(buffer)
+                    response_body = _decode_body(bytes(buffer)) if buffer else None
+                    if 300 <= status_code < 400:
+                        error = "Redirect responses are not followed"
+                    elif status_code >= 400:
+                        error = f"HTTP {status_code}"
     except Exception as exc:
         error = _safe_error(exc)
         logger.warning("Scheduled job %s failed: %s", job_id, error)

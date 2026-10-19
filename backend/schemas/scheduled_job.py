@@ -158,6 +158,17 @@ class ScheduledJobToggle(BaseModel):
     enabled: bool
 
 
+class ScheduledJobMapping(BaseModel):
+    """The API mapping a job is bound to, when it was created from one."""
+
+    endpoint_id: int
+    endpoint_code: str | None = None
+    internal_url: str
+    external_url: str
+    method: str
+    parameter_count: int = 0
+
+
 class ScheduledJobResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -176,6 +187,7 @@ class ScheduledJobResponse(BaseModel):
     next_run_time: UtcDateTime | None = None
     last_run_at: UtcDateTime | None = None
     last_success: bool | None = None
+    mapping: ScheduledJobMapping | None = None
 
 
 class ScheduledJobRunSummary(BaseModel):
@@ -209,6 +221,7 @@ __all__ = [
     "ScheduledJobBody",
     "ScheduledJobCreate",
     "ScheduledJobHeaders",
+    "ScheduledJobMapping",
     "ScheduledJobResponse",
     "ScheduledJobRunResponse",
     "ScheduledJobRunSummary",

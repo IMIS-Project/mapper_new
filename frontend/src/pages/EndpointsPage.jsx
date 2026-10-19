@@ -180,7 +180,7 @@ function EmptyRegistry({ onCreate }) {
 					viewBox="0 0 332 152"
 					fill="none"
 					role="img"
-					aria-label="Illustration of a source-to-target route"
+					aria-label="Illustration of an internal-to-external route"
 					style={{ maxWidth: "100%", height: "auto" }}
 				>
 					<defs>
@@ -292,7 +292,7 @@ function EmptyRegistry({ onCreate }) {
 					variant="body2"
 					sx={{ color: "text.secondary", maxWidth: 440, mt: 0.75, mb: 3 }}
 				>
-					Register your first source → target route and the gateway will start
+					Register your first internal → external route and the gateway will start
 					proxy-ing calls with field-level transformation and full call logging.
 				</Typography>
 				<Button variant="contained" startIcon={<Add />} onClick={onCreate}>

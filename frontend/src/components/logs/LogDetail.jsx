@@ -849,7 +849,7 @@ export default function LogDetail({ logId }) {
 								minWidth: 0,
 							}}
 						>
-							{detail.external_request_url || "— no target URL recorded —"}
+							{detail.external_request_url || "— no external URL recorded —"}
 						</Typography>
 					</Tooltip>
 					{detail.external_request_url ? (

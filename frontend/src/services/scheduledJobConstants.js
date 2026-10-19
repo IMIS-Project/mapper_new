@@ -126,6 +126,122 @@ export const formatBody = (body) => {
 	}
 };
 
+/* ------------------------------------------------------------------ *
+ * API mapping helpers (read-only view of `api_endpoint` +
+ * `api_endpoint_parameter_mapping`).
+ *
+ * Direction follows the gateway runtime, the same convention the endpoints
+ * page shows with its outbound/inbound icons:
+ *   source_api_url  -> the EXTERNAL API, the upstream actually dialled
+ *   target_api_url  -> the INTERNAL API, the route that receives the payload
+ * A mapping-backed job always calls the external API first and forwards its
+ * response verbatim to the internal API.
+ * ------------------------------------------------------------------ */
+
+/** Marks a run body written as the two-leg mapping envelope. */
+export const MAPPING_RUN_KIND = "api-mapping-cron-run";
+
+/** How a mapped parameter travels on the target request. */
+export const PARAM_LOCATIONS = ["BODY", "HEADER", "QUERY"];
+
+/** Normalise the mapping's `method` to one the scheduler accepts. */
+export const MAPPING_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
+
+export const normalizeMappingMethod = (method, fallback = "POST") => {
+	const normalized = String(method || "").trim().toUpperCase();
+	return MAPPING_METHODS.includes(normalized) ? normalized : fallback;
+};
+
+/** The external (upstream) API of a mapping — the one always called first. */
+export const mappingExternalUrl = (mapping) =>
+	String(mapping?.source_api_url || "").trim();
+
+/** The internal API of a mapping — the one that receives the external payload. */
+export const mappingInternalUrl = (mapping) =>
+	String(mapping?.target_api_url || "").trim();
+
+/** An internal URL must be absolute for the payload to be delivered to it. */
+export const isAbsoluteHttpUrl = (url) =>
+	/^https?:\/\//i.test(String(url || "").trim());
+
+/** Split a mapping's parameter rows into their BODY/HEADER/QUERY buckets. */
+export const groupParametersByLocation = (parameters) => {
+	const groups = { BODY: [], HEADER: [], QUERY: [] };
+	(parameters || []).forEach((parameter) => {
+		if (parameter?.is_active === false) return;
+		const raw = String(parameter?.parameter_type || "BODY").trim().toUpperCase();
+		const location = PARAM_LOCATIONS.includes(raw) ? raw : "BODY";
+		groups[location].push(parameter);
+	});
+	return groups;
+};
+
+/**
+ * The name the cron job's own request carries for a parameter. The gateway
+ * reads inbound values by `target_parameter` and renames them to
+ * `source_parameter` on the way out to the external API.
+ */
+export const parameterInternalName = (parameter) =>
+	String(parameter?.target_parameter || "").trim();
+
+/** The name the same parameter takes on the external API. */
+export const parameterExternalName = (parameter) =>
+	String(parameter?.source_parameter || "").trim();
+
+/** `{ name, value }` rows seeded from a bucket of mapped parameters. */
+export const parametersToRows = (parameters) =>
+	(parameters || [])
+		.map((parameter) => ({ name: parameterInternalName(parameter), value: "" }))
+		.filter((row) => row.name);
+
+/** A JSON body skeleton keyed by the internal field names. */
+export const buildBodySkeleton = (parameters) => {
+	const names = (parameters || []).map(parameterInternalName).filter(Boolean);
+	if (!names.length) return "";
+	return `${JSON.stringify(
+		Object.fromEntries(names.map((name) => [name, ""])),
+		null,
+		2,
+	)}\n`;
+};
+
+/** Merge freshly mapped rows into the rows already on the form. */
+export const mergeRows = (existing, incoming) => {
+	const merged = [...(existing || [])];
+	(incoming || []).forEach((row) => {
+		const name = (row?.name || "").trim();
+		if (!name) return;
+		const position = merged.findIndex(
+			(item) => (item.name || "").trim().toLowerCase() === name.toLowerCase(),
+		);
+		if (position === -1) merged.push({ ...row });
+	});
+	return merged;
+};
+
+/**
+ * The two-leg envelope a mapping run stores, or `null` for a plain run whose
+ * body is just the upstream response.
+ */
+export const parseMappingRun = (run) => {
+	if (!run?.response_body) return null;
+	try {
+		const parsed = JSON.parse(run.response_body);
+		if (parsed && parsed.kind === MAPPING_RUN_KIND) return parsed;
+	} catch {
+		/* A plain body that is not JSON is not a mapping run. */
+	}
+	return null;
+};
+
+/** Pretty-print one leg's captured body for the run detail view. */
+export const formatLegBody = (leg) => {
+	const body = leg?.body;
+	if (body === null || body === undefined || body === "") return "";
+	if (typeof body === "string") return formatBody(body);
+	return JSON.stringify(body, null, 2);
+};
+
 export const initialJobForm = {
 	job_id: "",
 	name: "",
@@ -136,4 +252,8 @@ export const initialJobForm = {
 	cron: "*/5 * * * *",
 	headers: [],
 	body: "",
+	/** "manual" keeps the free-text URL box; "mapping" registers from a mapping. */
+	sourceMode: "manual",
+	/** Id of the selected API mapping, when registering from one. */
+	mappingId: null,
 };

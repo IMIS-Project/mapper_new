@@ -410,7 +410,7 @@ function EmptyPrompt() {
 				sx={{ color: "text.secondary", maxWidth: 400, mx: "auto" }}
 			>
 				Build a request on the left and fire it through the gateway. Every
-				header exchanged with the target API will appear here, in full.
+				header exchanged with the external API will appear here, in full.
 			</Typography>
 		</Box>
 	);
@@ -643,13 +643,13 @@ export default function ResponseViewer({
 								wordBreak: "break-all",
 							}}
 						>
-							{externalUrl || "Target URL not echoed by the gateway."}
+							{externalUrl || "External URL not echoed by the gateway."}
 						</Typography>
 						{externalUrl ? (
 							<Tooltip title="Copy URL">
 								<IconButton
 									size="small"
-									aria-label="Copy target URL"
+									aria-label="Copy external URL"
 									onClick={() => copyText(externalUrl)}
 								>
 									<ContentCopy sx={{ fontSize: 14, color: "text.secondary" }} />
@@ -664,13 +664,13 @@ export default function ResponseViewer({
 					</SubLabel>
 					<HeadersTable
 						headers={result.external_request_headers}
-						emptyMessage="No headers were forwarded to the target."
+						emptyMessage="No headers were forwarded to the external API."
 					/>
 
 					<SubLabel>Query parameters</SubLabel>
 					<HeadersTable
 						headers={queryParams}
-						emptyMessage="No query parameters on the target URL."
+						emptyMessage="No query parameters on the external URL."
 					/>
 
 					<SubLabel>Transformed body</SubLabel>
@@ -725,13 +725,13 @@ export default function ResponseViewer({
 					</SubLabel>
 					<HeadersTable
 						headers={result.external_response_headers}
-						emptyMessage="No response headers were recorded from the target."
+						emptyMessage="No response headers were recorded from the external API."
 					/>
 
 					<SubLabel>Response body</SubLabel>
 					<JsonBlock
 						value={result.data}
-						emptyMessage="The target returned an empty body."
+						emptyMessage="The external API returned an empty body."
 						maxHeight={420}
 					/>
 				</Panel>
@@ -747,7 +747,7 @@ export default function ResponseViewer({
 								color={palette.primary.main}
 							/>
 							<TimingRow
-								label="Upstream target"
+								label="External call"
 								value={externalMs}
 								max={timingMax}
 								color={palette.secondary.main}

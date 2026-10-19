@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,18 +11,41 @@ from backend.models.scheduled_job import ScheduledJob
 from backend.schemas.common import SuccessResponse
 from backend.schemas.scheduled_job import (
     ScheduledJobCreate,
+    ScheduledJobMapping,
     ScheduledJobResponse,
     ScheduledJobRunResponse,
     ScheduledJobRunSummary,
     ScheduledJobToggle,
 )
-from backend.services import scheduler_service
+from backend.services import mapping_job_service, scheduler_service
 from backend.services.central_auth import CentralUser
 from backend.services.scheduler_security import UnsafeDestinationError
+
+logger = logging.getLogger(__name__)
 
 __all__ = ["router"]
 router = APIRouter(tags=["Scheduled Jobs"])
 User = CentralUser
+
+
+async def _mapping_routes() -> dict[tuple[str, str], mapping_job_service.MappingRoute]:
+    """Active mappings indexed by ``(internal URL, method)``.
+
+    One pair of SELECTs per response instead of one lookup per job, so the
+    15-second list poll stays cheap.
+    """
+    try:
+        routes = await mapping_job_service.list_routes()
+    except Exception:
+        logger.warning(
+            "Could not read API mappings for the cron job list", exc_info=True
+        )
+        return {}
+    return {
+        (route.internal_url.lower(), route.method.upper()): route
+        for route in routes
+        if route.internal_url
+    }
 
 
 def _summary(run) -> ScheduledJobRunSummary:
@@ -61,9 +86,16 @@ def _detail(run) -> ScheduledJobRunResponse:
     )
 
 
-async def _response(db: AsyncSession, row: ScheduledJob) -> ScheduledJobResponse:
+async def _response(
+    db: AsyncSession,
+    row: ScheduledJob,
+    routes: dict[tuple[str, str], mapping_job_service.MappingRoute] | None = None,
+) -> ScheduledJobResponse:
     live_job = scheduler_service.get_job(row.job_id)
     latest_run = await scheduler_service.get_latest_run(db, row.job_id)
+    if routes is None:
+        routes = await _mapping_routes()
+    route = routes.get(((row.url or "").lower(), (row.method or "").upper()))
     return ScheduledJobResponse(
         job_id=row.job_id,
         name=row.name,
@@ -80,6 +112,7 @@ async def _response(db: AsyncSession, row: ScheduledJob) -> ScheduledJobResponse
         next_run_time=live_job.next_run_time if live_job else None,
         last_run_at=latest_run.ran_at if latest_run else None,
         last_success=latest_run.success if latest_run else None,
+        mapping=ScheduledJobMapping(**route.as_dict()) if route else None,
     )
 
 
@@ -89,7 +122,8 @@ async def list_scheduled_jobs(
     _current_user: User = Depends(get_current_active_user),
 ):
     rows = await scheduler_service.list_jobs(db)
-    return [await _response(db, row) for row in rows]
+    routes = await _mapping_routes()
+    return [await _response(db, row, routes) for row in rows]
 
 
 @router.post(
