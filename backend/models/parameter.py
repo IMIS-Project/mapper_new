@@ -4,7 +4,7 @@ from sqlalchemy import ForeignKey, Index, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.db.base import Base
-from backend.models.types import YesNoBoolean
+from backend.models.types import ParameterTypeValue, YesNoBoolean
 
 if TYPE_CHECKING:
     from backend.models.endpoint import ApiEndpoint
@@ -56,7 +56,7 @@ class ParameterMapping(Base):
 
     parameter_type: Mapped[str | None] = mapped_column(
         "parameter_type",
-        String(20),
+        ParameterTypeValue(),
     )
 
     is_active: Mapped[bool] = mapped_column(

@@ -262,6 +262,51 @@ class MappingCronTests(unittest.TestCase):
             """
         )
 
+    def test_relative_internal_url_is_expanded_against_the_mapper_base(self):
+        run_isolated(
+            """
+            async def check():
+                from backend.core.config import settings
+
+                settings.MAPPER_BASE_URL = "https://internal.test"
+                async with AsyncSessionLocal() as db:
+                    endpoint = ApiEndpoint(
+                        endpoint_code="EP-REL00001",
+                        source_api_url=EXTERNAL_URL,
+                        target_api_url="/ref_crp_beneficiary",
+                        method="POST",
+                        is_active=True,
+                    )
+                    db.add(endpoint)
+                    await db.commit()
+
+                calls = []
+
+                async def handler(request):
+                    calls.append(str(request.url))
+                    return httpx.Response(200, content=b'{"ok": true}', request=request)
+
+                await create_job(url="/ref_crp_beneficiary")
+                async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+                    scheduler_service._http_client = client
+                    run = await scheduler_service.execute_scheduled_job(
+                        "mapped-job", "/ref_crp_beneficiary", "POST"
+                    )
+
+                assert run.success, run.error
+                assert calls[0] == EXTERNAL_URL, calls
+                assert calls[1] == "https://internal.test/ref_crp_beneficiary", calls
+
+                envelope = json.loads(run.response_body)
+                assert (
+                    envelope["internal"]["url"]
+                    == "https://internal.test/ref_crp_beneficiary"
+                ), envelope["internal"]
+
+            await check()
+            """
+        )
+
     def test_mapping_tables_are_only_ever_selected(self):
         run_isolated(
             """

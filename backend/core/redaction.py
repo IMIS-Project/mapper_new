@@ -24,6 +24,10 @@ SENSITIVE_KEYS = (
     "token",
     "apikey",
     "api_key",
+    # Bearer/basic credentials travel in these headers; the value must never
+    # be echoed back or stored in a run's captured request headers.
+    "authorization",
+    "x-api-token",
 )
 
 # Three base64url segments is a JWT whatever key it happens to sit under, so

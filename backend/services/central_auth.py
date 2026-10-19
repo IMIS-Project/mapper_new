@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
+import hashlib
 import json
 import logging
 import os
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -20,9 +23,29 @@ logger = logging.getLogger(__name__)
 _NONCE_SIZE = 12
 _TAG_SIZE = 16
 
+# Short-lived identity cache keyed by a digest of the access token. Entries are
+# dropped when they expire; the size cap is only a backstop for a process that
+# sees an unusual number of distinct tokens.
+_TOKEN_CACHE: dict[str, tuple[float, "CentralUser"]] = {}
+_TOKEN_CACHE_MAX_ENTRIES = 512
+
+
+def _prune_token_cache() -> None:
+    """Drop expired entries, then the soonest-expiring ones if still oversized."""
+    now = time.monotonic()
+    for key in [key for key, (expiry, _) in _TOKEN_CACHE.items() if expiry <= now]:
+        _TOKEN_CACHE.pop(key, None)
+    overflow = len(_TOKEN_CACHE) - _TOKEN_CACHE_MAX_ENTRIES
+    if overflow > 0:
+        for key, _ in sorted(_TOKEN_CACHE.items(), key=lambda item: item[1][0])[
+            :overflow
+        ]:
+            _TOKEN_CACHE.pop(key, None)
+
 
 __all__ = [
     "CentralAuthError",
+    "CentralAuthRateLimited",
     "CentralAuthRejected",
     "CentralAuthUnavailable",
     "CentralSession",
@@ -33,6 +56,7 @@ __all__ = [
     "central_refresh",
     "decrypt_auth_json",
     "encrypt_auth_json",
+    "invalidate_access_token",
     "validate_access_token",
 ]
 
@@ -40,17 +64,36 @@ __all__ = [
 class CentralAuthError(RuntimeError):
     """An error returned while talking to the centralized auth service."""
 
-    def __init__(self, message: str, status_code: int = 502) -> None:
+    def __init__(
+        self,
+        message: str,
+        status_code: int = 502,
+        retry_after: int | None = None,
+    ) -> None:
         super().__init__(message)
         self.message = message
         self.status_code = status_code
+        self.retry_after = retry_after
 
 
 class CentralAuthUnavailable(CentralAuthError):
     """The central service could not be reached or is not configured."""
 
-    def __init__(self, message: str = "Authentication service unavailable") -> None:
-        super().__init__(message, status_code=503)
+    def __init__(
+        self,
+        message: str = "Authentication service unavailable",
+        retry_after: int | None = None,
+    ) -> None:
+        super().__init__(message, status_code=503, retry_after=retry_after)
+
+
+class CentralAuthRateLimited(CentralAuthError):
+    """The central service is throttling us; retrying immediately makes it worse."""
+
+    def __init__(
+        self, message: str = "Too many requests", retry_after: int | None = None
+    ) -> None:
+        super().__init__(message, status_code=429, retry_after=retry_after)
 
 
 class CentralAuthRejected(CentralAuthError):
@@ -103,7 +146,7 @@ def _process_aes_key(value: str | None) -> bytes:
             "Central authentication encryption key is not configured"
         )
 
-    if "=" in value or "+" in value or "/":
+    if "=" in value or "+" in value or "/" in value:
         try:
             decoded = base64.b64decode(value, validate=True)
             if len(decoded) == 32:
@@ -191,6 +234,77 @@ def _url(path: str) -> str:
     return f"{_base_url().rstrip('/')}/{path.lstrip('/')}"
 
 
+# 5xx responses are worth another attempt; 4xx never are. A rejected password
+# or an upstream rate limit will not change on a retry, and retrying a
+# rate-limited endpoint only extends the block.
+_TRANSIENT_STATUS = frozenset({500, 502, 503, 504})
+
+
+async def _request(
+    client: httpx.AsyncClient,
+    method: str,
+    url: str,
+    *,
+    what: str,
+    attempts: int | None = None,
+    **kwargs: Any,
+) -> httpx.Response:
+    """Send one central-auth request, retrying transient failures.
+
+    A dropped connection or a brief 5xx from the central service used to
+    surface to the caller as a hard 503 with nothing written to the log, which
+    made the failure impossible to diagnose. Retry those, log every outcome,
+    and let 4xx responses through so the caller sees the real reason.
+    """
+    total = max(
+        1, int(attempts if attempts is not None else settings.AUTH_RETRY_ATTEMPTS)
+    )
+    delay = max(0.0, float(settings.AUTH_RETRY_BACKOFF_SECONDS))
+    last_exc: Exception | None = None
+
+    for attempt in range(1, total + 1):
+        try:
+            response = await client.request(method, url, **kwargs)
+        except (httpx.RequestError, httpx.TimeoutException) as exc:
+            last_exc = exc
+            logger.warning(
+                "Central auth %s failed (attempt %d/%d) at %s: %s",
+                what,
+                attempt,
+                total,
+                url,
+                exc,
+            )
+            if attempt < total:
+                await asyncio.sleep(delay * attempt)
+                continue
+            raise CentralAuthUnavailable() from exc
+
+        if response.status_code in _TRANSIENT_STATUS and attempt < total:
+            logger.warning(
+                "Central auth %s returned HTTP %s (attempt %d/%d) at %s; retrying",
+                what,
+                response.status_code,
+                attempt,
+                total,
+                url,
+            )
+            await asyncio.sleep(delay * attempt)
+            continue
+
+        if response.status_code >= 400:
+            logger.warning(
+                "Central auth %s returned HTTP %s at %s: %s",
+                what,
+                response.status_code,
+                url,
+                response.text[:300],
+            )
+        return response
+
+    raise CentralAuthUnavailable() from last_exc
+
+
 def _json_response(response: httpx.Response) -> dict[str, Any]:
     try:
         value = response.json()
@@ -212,6 +326,17 @@ def _envelope(response: httpx.Response) -> dict[str, Any]:
     return raw
 
 
+def _retry_after_seconds(response: httpx.Response) -> int | None:
+    """Seconds to wait before retrying, from an upstream ``Retry-After`` header."""
+    raw = response.headers.get("Retry-After")
+    if not raw:
+        return None
+    try:
+        return max(0, int(float(raw)))
+    except (TypeError, ValueError):
+        return None
+
+
 def _raise_for_error(response: httpx.Response, envelope: Mapping[str, Any]) -> None:
     code_value = envelope.get("code", response.status_code)
     try:
@@ -225,21 +350,46 @@ def _raise_for_error(response: httpx.Response, envelope: Mapping[str, Any]) -> N
     message = str(
         envelope.get("message") or envelope.get("detail") or "Authentication failed"
     )
+    retry_after = _retry_after_seconds(response)
     if code in {400, 401, 403} or response.status_code in {400, 401, 403}:
         raise CentralAuthRejected(
             message, status_code=code if 400 <= code < 600 else response.status_code
         )
+    if code == 429 or response.status_code == 429:
+        logger.warning("Central auth rate limited the request: %s", message)
+        raise CentralAuthRateLimited(message, retry_after=retry_after)
     if response.status_code >= 500 or code >= 500:
-        raise CentralAuthUnavailable()
-    raise CentralAuthError(message, status_code=code if 400 <= code < 600 else 502)
+        logger.error(
+            "Central auth rejected the request with a server error: HTTP %s, "
+            "code=%s, message=%s",
+            response.status_code,
+            code,
+            message,
+        )
+        raise CentralAuthUnavailable(
+            "Authentication service is temporarily unavailable",
+            retry_after=retry_after,
+        )
+    raise CentralAuthError(
+        message,
+        status_code=code if 400 <= code < 600 else 502,
+        retry_after=retry_after,
+    )
 
 
 def _request_json(response: httpx.Response) -> dict[str, Any]:
     try:
         envelope = _envelope(response)
-    except CentralAuthError:
+    except CentralAuthError as exc:
+        logger.warning(
+            "Central auth returned an unusable body (HTTP %s): %s",
+            response.status_code,
+            exc,
+        )
         if response.status_code >= 500:
-            raise CentralAuthUnavailable()
+            raise CentralAuthUnavailable(
+                retry_after=_retry_after_seconds(response)
+            ) from exc
         raise
     _raise_for_error(response, envelope)
     return envelope
@@ -250,8 +400,11 @@ async def _get_pre_auth_token(
 ) -> str:
     """Get the short-lived token required by the central login route."""
     try:
-        response = await client.post(
+        response = await _request(
+            client,
+            "POST",
             _url("get_token"),
+            what="get_token",
             json={
                 "interface_type_id": 0,
                 "mac_address": "00:00:00:00:00:00",
@@ -343,8 +496,11 @@ async def central_login(
     pre_auth_token = await _get_pre_auth_token(client, ip_address=ip_address)
     payload = {"email": email.strip(), "password": password, "interface_type": "W"}
     try:
-        response = await client.post(
+        response = await _request(
+            client,
+            "POST",
             _url("auth1/login"),
+            what="login",
             headers={"Authorization": f"Bearer {pre_auth_token}"},
             json={"encrypted_data": encrypt_auth_json(payload)},
         )
@@ -378,10 +534,23 @@ async def central_login(
 async def validate_access_token(
     client: httpx.AsyncClient, access_token: str
 ) -> CentralUser:
-    """Validate an access token and load the current central identity."""
+    """Validate an access token and load the current central identity.
+
+    Results are cached for a short window. Without it every console request -
+    including the 15s scheduled-jobs polling - costs a round trip to the
+    central service, so a single blip there fails unrelated reads with a 503.
+    """
+    cache_key = hashlib.sha256(access_token.encode("utf-8")).hexdigest()
+    cached = _TOKEN_CACHE.get(cache_key)
+    if cached is not None and cached[0] > time.monotonic():
+        return cached[1]
+
     try:
-        response = await client.get(
+        response = await _request(
+            client,
+            "GET",
             _url("auth1/permissions"),
+            what="permissions",
             headers={"Authorization": f"Bearer {access_token}"},
         )
     except (httpx.RequestError, httpx.TimeoutException) as exc:
@@ -390,7 +559,20 @@ async def validate_access_token(
     data = envelope.get("data")
     if not isinstance(data, Mapping):
         raise CentralAuthRejected("Authentication service returned no permission data")
-    return _central_user(data)
+    user = _central_user(data)
+
+    ttl = max(0.0, float(settings.AUTH_TOKEN_CACHE_SECONDS))
+    if ttl:
+        _TOKEN_CACHE[cache_key] = (time.monotonic() + ttl, user)
+        if len(_TOKEN_CACHE) > _TOKEN_CACHE_MAX_ENTRIES:
+            _prune_token_cache()
+    return user
+
+
+def invalidate_access_token(access_token: str) -> None:
+    """Drop a cached identity so a revoked token is rejected immediately."""
+    if access_token:
+        _TOKEN_CACHE.pop(hashlib.sha256(access_token.encode("utf-8")).hexdigest(), None)
 
 
 async def central_refresh(
@@ -398,8 +580,11 @@ async def central_refresh(
 ) -> CentralTokenPair:
     """Exchange a central refresh token for a new access token."""
     try:
-        response = await client.post(
+        response = await _request(
+            client,
+            "POST",
             _url("auth1/refresh_token"),
+            what="refresh",
             headers={"Authorization": f"Bearer {refresh_token}"},
             json={"encrypted_data": encrypt_auth_json({})},
         )
@@ -428,13 +613,18 @@ async def central_refresh(
 
 async def central_logout(client: httpx.AsyncClient, access_token: str) -> None:
     """Revoke a central access token; callers may treat this as best effort."""
+    invalidate_access_token(access_token)
     try:
-        response = await client.post(
+        response = await _request(
+            client,
+            "POST",
             _url("auth1/logout"),
+            what="logout",
+            attempts=1,
             headers={"Authorization": f"Bearer {access_token}"},
             json={"encrypted_data": encrypt_auth_json({})},
         )
-    except (httpx.RequestError, httpx.TimeoutException):
+    except (httpx.RequestError, httpx.TimeoutException, CentralAuthError):
         return
 
     if response.status_code not in {401, 403}:

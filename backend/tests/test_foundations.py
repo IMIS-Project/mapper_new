@@ -36,12 +36,13 @@ with (
     from backend.core.config import Settings
     from backend.models import (
         ApiEndpoint,
+        ParamTypeEnum,
         ParameterMapping,
         User,
         Webhook,
         WebhookEvent,
     )
-    from backend.models.types import YesNoBoolean
+    from backend.models.types import ParameterTypeValue, YesNoBoolean
     from backend.schemas.endpoint import EndpointCreate, EndpointUpdate
     from backend.schemas.gateway import MapAndCallResponse
     from backend.schemas.parameter import ParameterCreate
@@ -164,6 +165,33 @@ class YesNoBooleanTests(unittest.TestCase):
         ):
             with self.subTest(column=column.key):
                 self.assertIsInstance(column.type, YesNoBoolean)
+
+
+class ParameterTypeValueTests(unittest.TestCase):
+    def test_app_query_value_maps_to_legacy_querystring_column(self):
+        column_type = ParameterTypeValue()
+
+        # The app speaks QUERY; the legacy column spells it QUERYSTRING.
+        self.assertEqual(column_type.process_bind_param("QUERY", None), "QUERYSTRING")
+        self.assertEqual(
+            column_type.process_bind_param(ParamTypeEnum.QUERY, None), "QUERYSTRING"
+        )
+        self.assertEqual(column_type.process_bind_param("BODY", None), "BODY")
+        self.assertEqual(column_type.process_bind_param("HEADER", None), "HEADER")
+        self.assertEqual(
+            column_type.process_bind_param("QUERYSTRING", None), "QUERYSTRING"
+        )
+        self.assertIsNone(column_type.process_bind_param(None, None))
+
+        # Legacy rows read back as the app spelling.
+        self.assertEqual(column_type.process_result_value("QUERYSTRING", None), "QUERY")
+        self.assertEqual(column_type.process_result_value("BODY", None), "BODY")
+        self.assertIsNone(column_type.process_result_value(None, None))
+
+    def test_parameter_column_uses_the_translating_type(self):
+        self.assertIsInstance(
+            ParameterMapping.parameter_type.type, ParameterTypeValue
+        )
 
 
 class ResolutionTests(unittest.IsolatedAsyncioTestCase):

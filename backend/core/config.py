@@ -96,6 +96,13 @@ class Settings(BaseSettings):
 
     APP_ROOT_PATH: str = ""
 
+    # Public base URL of this mapper deployment (scheme + host, optionally a
+    # path prefix). A mapping may store its internal API as a bare path such as
+    # ``/ref_crp_beneficiary``; that path is expanded against this base before
+    # the mapped payload is delivered. Leave empty to keep requiring absolute
+    # internal URLs.
+    MAPPER_BASE_URL: str = ""
+
     @field_validator("APP_ROOT_PATH", mode="before")
     @classmethod
     def _normalize_root_path(cls, value: Any) -> str:
@@ -110,6 +117,18 @@ class Settings(BaseSettings):
     AUTH_BASE_URL: str
 
     AUTH_SERVICE_ENCRYPTION_KEY: str | None = None
+
+    # Central auth is an external service: a single dropped connection or a
+    # brief 5xx used to turn into a hard 503 for the caller. Retry the two
+    # login hops a couple of times before giving up. 4xx responses are never
+    # retried - a rejected credential or a rate limit will not change.
+    AUTH_RETRY_ATTEMPTS: int = Field(default=3, ge=1, le=5)
+    AUTH_RETRY_BACKOFF_SECONDS: float = Field(default=0.25, ge=0)
+
+    # How long a validated token's identity is reused before asking the central
+    # service again. Keeps the 15s console polling from turning every page
+    # refresh into an upstream permissions round trip. 0 disables the cache.
+    AUTH_TOKEN_CACHE_SECONDS: float = Field(default=30.0, ge=0)
 
     UPSTREAM_AUTH_URL: str | None = None
     UPSTREAM_AUTH_EMAIL: str | None = None

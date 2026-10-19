@@ -414,7 +414,7 @@ function MappingSummary({ mapping, parameters }) {
 			</Box>
 		</Box> : null}
 		{!external ? <Alert severity="warning" sx={{ mt: 1, py: 0.25 }}>This mapping has no external URL, so the run will be recorded without calling out.</Alert> : null}
-		{!isAbsoluteHttpUrl(internal) ? <Alert severity="warning" sx={{ mt: 1, py: 0.25 }}>This mapping&rsquo;s internal URL is not an absolute HTTP(S) URL, so the external payload cannot be delivered to it.</Alert> : null}
+		{!isAbsoluteHttpUrl(internal) ? <Alert severity="info" sx={{ mt: 1, py: 0.25 }}>This mapping&rsquo;s internal URL is a path; it is expanded against the mapper&rsquo;s base URL when the external payload is delivered.</Alert> : null}
 	</Box>;
 }
 
@@ -504,7 +504,7 @@ function HeaderTable({ title, headers, empty }) {
 	const entries = Object.entries(headers || {});
 	return <Box sx={{ mb: 2 }}>
 		<Typography className="mono-label" color="text.secondary" sx={{ mb: 0.75 }}>{title}</Typography>
-		{entries.length === 0 ? <Typography variant="body2" color="text.disabled">{empty}</Typography> : <Box sx={{ border: "1px solid", borderColor: "divider", borderRadius: 2, overflow: "hidden" }}><Table size="small"><TableBody>{entries.map(([name, value]) => <TableRow key={name}><TableCell sx={{ fontFamily: "var(--font-mono)", fontSize: "0.74rem", whiteSpace: "nowrap", verticalAlign: "top", width: 1 }}>{name}</TableCell><TableCell sx={{ fontFamily: "var(--font-mono)", fontSize: "0.74rem", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{value}</TableCell></TableRow>)}</TableBody></Table></Box>}
+		{entries.length === 0 ? <Typography variant="body2" color="text.disabled">{empty}</Typography> : <Box sx={{ border: "1px solid", borderColor: "divider", borderRadius: 2, overflow: "hidden" }}><Table size="small"><TableBody>{entries.map(([name, value]) => <TableRow key={name}><TableCell sx={{ fontFamily: "var(--font-mono)", fontSize: "0.74rem", whiteSpace: "nowrap", verticalAlign: "top", width: "1%" }}>{name}</TableCell><TableCell sx={{ fontFamily: "var(--font-mono)", fontSize: "0.74rem", whiteSpace: "pre-wrap", wordBreak: "break-word", width: "99%" }}>{value}</TableCell></TableRow>)}</TableBody></Table></Box>}
 	</Box>;
 }
 

@@ -37,6 +37,13 @@ router = APIRouter(tags=["API Endpoints"])
 
 _PARAM_TYPE_VALUES = {member.value for member in ParamTypeEnum}
 
+# The mapper frontend edits ``QUERY``; older payloads (and the legacy DB
+# column) spell the same location ``QUERYSTRING``. Accept every spelling.
+_LEGACY_PARAM_TYPES = {
+    "QUERYSTRING": ParamTypeEnum.QUERY.value,
+    "QUERY_STRING": ParamTypeEnum.QUERY.value,
+}
+
 
 def _resolve_param_type(item: MappingItem) -> str:
 
@@ -50,6 +57,7 @@ def _resolve_param_type(item: MappingItem) -> str:
 
     for candidate in candidates:
         normalized = (candidate or "").strip().upper()
+        normalized = _LEGACY_PARAM_TYPES.get(normalized, normalized)
         if normalized in _PARAM_TYPE_VALUES:
             return normalized
 

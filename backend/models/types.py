@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import String, TypeDecorator
 from sqlalchemy.engine import Dialect
 
-__all__ = ["YesNoBoolean"]
+__all__ = ["ParameterTypeValue", "YesNoBoolean"]
 
 
 class YesNoBoolean(TypeDecorator[bool]):
@@ -49,3 +49,52 @@ class YesNoBoolean(TypeDecorator[bool]):
             return False
 
         raise ValueError(f"Unsupported Y/N value: {value!r}")
+
+
+class ParameterTypeValue(TypeDecorator[str]):
+    """Map the API's ``QUERY`` location onto the legacy MySQL enum value.
+
+    The ``api_endpoint_parameter_mapping.parameter_type`` column is a legacy
+    ``ENUM('HEADER', 'BODY', 'QUERYSTRING')`` -- it spells the query location
+    ``QUERYSTRING`` while the application (and the mapper frontend) speaks
+    ``QUERY``. Writing ``QUERY`` straight to that column makes MySQL truncate
+    it (error 1265), which surfaced as a 500 on save. Translating at the column
+    boundary fixes reads and writes everywhere without touching the schema.
+    """
+
+    impl = String(20)
+    cache_ok = True
+
+    _TO_DB = {
+        "QUERY": "QUERYSTRING",
+        "QUERYSTRING": "QUERYSTRING",
+        "QUERY_STRING": "QUERYSTRING",
+    }
+    _FROM_DB = {
+        "QUERYSTRING": "QUERY",
+        "QUERY_STRING": "QUERY",
+    }
+
+    def process_bind_param(
+        self,
+        value: Any,
+        dialect: Dialect,
+    ) -> str | None:
+        """Translate the app value to the spelling the column accepts."""
+        if value is None:
+            return None
+
+        normalized = str(getattr(value, "value", value)).strip().upper()
+        return self._TO_DB.get(normalized, normalized)
+
+    def process_result_value(
+        self,
+        value: Any,
+        dialect: Dialect,
+    ) -> str | None:
+        """Normalise legacy ``QUERYSTRING`` rows back to ``QUERY``."""
+        if value is None:
+            return None
+
+        normalized = str(value).strip().upper()
+        return self._FROM_DB.get(normalized, normalized)

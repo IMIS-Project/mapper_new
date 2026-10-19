@@ -37,6 +37,7 @@ from backend.core.redaction import mask_sensitive
 from backend.db.session import AsyncSessionLocal
 from backend.models import ApiEndpoint, ParameterMapping
 from backend.services.gateway_engine import EndpointSnapshot, GatewayEngine
+from backend.services.upstream_auth import apply_upstream_auth
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +47,10 @@ __all__ = [
     "MappingLeg",
     "MappingRoute",
     "execute_mapping_job",
+    "is_absolute_http_url",
     "list_routes",
     "resolve_endpoint",
+    "resolve_internal_url",
 ]
 
 #: Marks a stored run body as the two-leg envelope written by this module, so
@@ -122,7 +125,9 @@ class MappingLeg:
             "method": self.method,
             "status_code": self.status_code,
             "duration_ms": self.duration_ms,
-            "request_headers": self.request_headers,
+            # Never persist the bearer this leg actually sent (the service
+            # account token or a static API token).
+            "request_headers": mask_sensitive(self.request_headers),
             "response_headers": self.response_headers,
             "body": self.body,
             "error": self.error,
@@ -261,6 +266,13 @@ async def _deliver_to_internal(
         content = encoded.encode("utf-8")
         send_headers.setdefault("Content-Type", "application/json")
 
+    # The internal (target) API is part of the same IMIS estate and usually
+    # rejects anonymous calls with 401. Authenticate the delivery the same way
+    # the gateway authenticates its upstream calls: a static token when the
+    # host has one configured, otherwise a service-account bearer from the
+    # central auth login. A header already supplied by the cron job wins.
+    await apply_upstream_auth(send_headers, http_client, url)
+
     try:
         async with http_client.stream(
             method,
@@ -329,6 +341,32 @@ def _elapsed_ms(started: float) -> int:
     return max(0, int((time.perf_counter() - started) * 1000))
 
 
+def is_absolute_http_url(url: str) -> bool:
+    """True when ``url`` already carries an explicit ``http(s)`` scheme."""
+    return str(url or "").strip().lower().startswith(("http://", "https://"))
+
+
+def resolve_internal_url(url: str) -> str:
+    """Expand a scheme-less internal URL against ``settings.MAPPER_BASE_URL``.
+
+    A mapping may register its internal API as a bare path (for example
+    ``/ref_crp_beneficiary``) so the route is not repeated on every endpoint.
+    Absolute URLs are returned untouched; anything else is joined onto the
+    mapper's configured base URL. When no base is configured the value is
+    returned unchanged and the caller reports the configuration error.
+    """
+    text = str(url or "").strip()
+    if not text or "://" in text:
+        return text
+
+    base = str(settings.MAPPER_BASE_URL or "").strip().rstrip("/")
+    if not base:
+        return text
+
+    path = text if text.startswith("/") else f"/{text}"
+    return f"{base}{path}"
+
+
 async def execute_mapping_job(
     *,
     internal_url: str,
@@ -392,19 +430,20 @@ async def execute_mapping_job(
     )
 
     target_url = str(endpoint.target_api_url or "").strip()
+    delivery_url = resolve_internal_url(target_url)
     internal: MappingLeg | None = None
     if not external_ok:
         error = f"External API call failed: {external.error or 'unknown error'}"
         status_code = external.status_code
-    elif not target_url.lower().startswith(("http://", "https://")):
+    elif not is_absolute_http_url(delivery_url):
         error = (
             "The internal API URL of this mapping is not an absolute HTTP(S) "
-            "URL, so the external payload cannot be delivered to it"
+            "URL; set MAPPER_BASE_URL so a relative path can be expanded"
         )
         status_code = external.status_code
     else:
         internal = await _deliver_to_internal(
-            url=target_url,
+            url=delivery_url,
             method=method,
             payload=external.body,
             # The cron job's own headers, never the external request's: that

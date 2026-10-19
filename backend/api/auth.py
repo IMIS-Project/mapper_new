@@ -12,8 +12,6 @@ from backend.schemas.auth import (
 )
 from backend.services.central_auth import (
     CentralAuthError,
-    CentralAuthRejected,
-    CentralAuthUnavailable,
     central_login,
     central_logout,
     central_refresh,
@@ -37,10 +35,16 @@ def _user_payload(user) -> dict:
     }
 
 
+def _retry_after_header(exc: CentralAuthError) -> dict[str, str] | None:
+    retry_after = getattr(exc, "retry_after", None)
+    return {"Retry-After": str(retry_after)} if retry_after else None
+
+
 def _login_error(exc: CentralAuthError) -> JSONResponse:
     return JSONResponse(
         status_code=exc.status_code,
         content=LoginResponse(success=False, message=exc.message).model_dump(),
+        headers=_retry_after_header(exc),
     )
 
 
@@ -58,10 +62,6 @@ async def login(
             request.password,
             ip_address=http_request.client.host if http_request.client else None,
         )
-    except CentralAuthRejected as exc:
-        return _login_error(exc)
-    except CentralAuthUnavailable as exc:
-        return _login_error(exc)
     except CentralAuthError as exc:
         return _login_error(exc)
 
@@ -88,6 +88,7 @@ async def refresh(
         return JSONResponse(
             status_code=exc.status_code,
             content=RefreshResponse(success=False, message=exc.message).model_dump(),
+            headers=_retry_after_header(exc),
         )
     return RefreshResponse(
         success=True,
