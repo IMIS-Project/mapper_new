@@ -20,6 +20,11 @@ def run_isolated(body: str, prepare: str = "") -> None:
                 "DATABASE_URL": "sqlite+aiosqlite:///:memory:",
                 "SCHEDULER_DATABASE_PATH": str(Path(directory) / "scheduler.db"),
                 "SCHEDULER_ALLOWED_HOSTS": "example.test",
+                # Keep these tests offline: the host has no auth service.
+                "UPSTREAM_AUTH_URL": "",
+                "UPSTREAM_AUTH_EMAIL": "",
+                "UPSTREAM_AUTH_PASSWORD": "",
+                "UPSTREAM_API_TOKENS": "",
             }
         )
         script = textwrap.dedent(
@@ -32,9 +37,23 @@ def run_isolated(body: str, prepare: str = "") -> None:
             from backend.schemas.scheduled_job import ScheduledJobCreate
             from backend.services import scheduler_service
 
+            async def seed_job(job_id):
+                async with SchedulerSessionLocal() as db:
+                    db.add(
+                        ScheduledJob(
+                            job_id=job_id,
+                            url="https://example.test/health",
+                            method="GET",
+                            enabled=True,
+                        )
+                    )
+                    await db.commit()
+
             async def main():
                 await create_scheduler_tables()
                 try:
+                    for job_id in ("test-job", "failed-job", "redirect-job"):
+                        await seed_job(job_id)
                     interval = scheduler_service.build_trigger(interval_seconds=15)
                     cron = scheduler_service.build_trigger(cron="*/5 * * * *")
                     assert interval.interval.total_seconds() == 15
@@ -102,6 +121,92 @@ def run_isolated(body: str, prepare: str = "") -> None:
 class SchedulerIntegrationTests(unittest.TestCase):
     def test_scheduler_uses_temporary_sqlite_and_persists_runs(self):
         run_isolated("")
+
+    def test_disabled_and_missing_jobs_never_hit_the_network(self):
+        run_isolated(
+            """
+            import asyncio
+
+            async def check():
+                async with SchedulerSessionLocal() as db:
+                    db.add(
+                        ScheduledJob(
+                            job_id="disabled-job",
+                            url="https://example.test/health",
+                            method="GET",
+                            enabled=False,
+                        )
+                    )
+                    db.add(
+                        ScheduledJob(
+                            job_id="toggle-job",
+                            url="https://example.test/health",
+                            method="GET",
+                            enabled=True,
+                        )
+                    )
+                    await db.commit()
+
+                calls = []
+
+                async def handler(request):
+                    calls.append(str(request.url))
+                    return httpx.Response(200, request=request)
+
+                async with httpx.AsyncClient(
+                    transport=httpx.MockTransport(handler)
+                ) as client:
+                    scheduler_service._http_client = client
+                    enabled = await scheduler_service.execute_scheduled_job(
+                        "toggle-job", "https://example.test/health", "GET"
+                    )
+                    assert enabled.success, enabled.error
+                    assert calls == ["https://example.test/health"], calls
+
+                    # The next tick must re-read the row, not trust the
+                    # APScheduler entry that was live when the job started.
+                    async with SchedulerSessionLocal() as db:
+                        row = await db.get(ScheduledJob, "toggle-job")
+                        row.enabled = False
+                        await db.commit()
+
+                    toggled = await scheduler_service.execute_scheduled_job(
+                        "toggle-job", "https://example.test/health", "GET"
+                    )
+                    disabled = await scheduler_service.execute_scheduled_job(
+                        "disabled-job", "https://example.test/health", "GET"
+                    )
+                    missing = await scheduler_service.execute_scheduled_job(
+                        "missing-job", "https://example.test/health", "GET"
+                    )
+
+                assert calls == ["https://example.test/health"], calls
+                assert toggled.error == "Scheduled job is disabled", toggled.error
+                assert toggled.success is False and toggled.id is None
+                assert disabled.error == "Scheduled job is disabled", disabled.error
+                assert disabled.success is False and disabled.id is None
+                assert missing.error == "Scheduled job not found", missing.error
+                assert missing.success is False and missing.id is None
+
+                async with SchedulerSessionLocal() as db:
+                    rows = list(
+                        (
+                            await db.execute(
+                                select(ScheduledJobRun).where(
+                                    ScheduledJobRun.job_id.in_(
+                                        ("disabled-job", "missing-job")
+                                    )
+                                )
+                            )
+                        )
+                        .scalars()
+                        .all()
+                    )
+                assert rows == [], rows
+
+            asyncio.run(check())
+            """
+        )
 
     def test_scheduler_payload_validation_rejects_invalid_inputs(self):
         run_isolated(

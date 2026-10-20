@@ -286,6 +286,43 @@ class MappingCronHttpTests(unittest.TestCase):
             """
         )
 
+    def test_run_now_refuses_a_disabled_job_without_calling_anything(self):
+        run_isolated(
+            """
+            await seed()
+            http = client()
+            created = http.post(
+                "/api/scheduled-jobs",
+                json={
+                    "job_id": "disabled-mapped",
+                    "url": INTERNAL_URL,
+                    "method": "POST",
+                    "interval_seconds": 3600,
+                    "body": '{"reference": "REF-3"}',
+                },
+            )
+            assert created.status_code == 201, created.text
+
+            disabled = http.patch(
+                "/api/scheduled-jobs/disabled-mapped",
+                json={"enabled": False},
+            )
+            assert disabled.status_code == 200, disabled.text
+            assert disabled.json()["enabled"] is False, disabled.text
+
+            transport_client, calls = transport()
+            scheduler_service._http_client = transport_client
+            try:
+                ran = http.post("/api/scheduled-jobs/disabled-mapped/run")
+            finally:
+                await transport_client.aclose()
+
+            assert ran.status_code == 409, ran.text
+            assert ran.json()["detail"] == "Scheduled job is disabled", ran.text
+            assert calls == [], calls
+            """
+        )
+
     def test_run_now_returns_the_two_leg_envelope(self):
         run_isolated(
             """

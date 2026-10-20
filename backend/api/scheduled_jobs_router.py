@@ -214,6 +214,8 @@ async def run_scheduled_job_now(
         run = await scheduler_service.run_job_now(db, job_id)
     except scheduler_service.SchedulerNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except scheduler_service.SchedulerJobDisabledError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return _detail(run)
 
 

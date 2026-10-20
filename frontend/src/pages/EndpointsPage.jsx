@@ -10,7 +10,6 @@ import {
 	Search,
 	SearchOff,
 	Storage,
-	SyncAlt,
 	TableRows,
 } from "@mui/icons-material";
 import {
@@ -471,12 +470,7 @@ export default function EndpointsPage() {
 	const stats = useMemo(() => {
 		const total = endpoints.length;
 		const active = endpoints.filter((item) => item.is_active).length;
-		const methods = new Set(
-			endpoints
-				.map((item) => String(item.method ?? "").toUpperCase())
-				.filter(Boolean),
-		).size;
-		return { total, active, inactive: total - active, methods };
+		return { total, active, inactive: total - active };
 	}, [endpoints]);
 
 	const methodOptions = useMemo(
@@ -755,7 +749,7 @@ export default function EndpointsPage() {
 							display: "grid",
 							gridTemplateColumns: {
 								xs: "repeat(2, 1fr)",
-								md: "repeat(4, 1fr)",
+								md: "repeat(3, 1fr)",
 							},
 							gap: 1.5,
 						}}
@@ -790,12 +784,6 @@ export default function EndpointsPage() {
 									prev === "INACTIVE" ? "ALL" : "INACTIVE",
 								)
 							}
-						/>
-						<StatTile
-							label="Methods in use"
-							value={stats.methods}
-							icon={<SyncAlt />}
-							accent={theme.palette.secondary.main}
 						/>
 					</Box>
 

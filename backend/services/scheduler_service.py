@@ -61,6 +61,10 @@ class SchedulerNotFoundError(Exception):
     """A scheduler configuration no longer exists."""
 
 
+class SchedulerJobDisabledError(Exception):
+    """A scheduler job exists but is currently disabled."""
+
+
 class SchedulerLimitError(Exception):
     """The scheduler job limit has been reached."""
 
@@ -116,6 +120,35 @@ def guess_content_type(body: str) -> str:
     if body.lstrip()[:1] == "<":
         return "application/xml"
     return "text/plain; charset=utf-8"
+
+
+def _skipped_run(
+    job_id: str,
+    url: str,
+    method: str,
+    reason: str,
+    started: float,
+) -> ScheduledJobRun:
+    """Transient run describing a job that was not allowed to execute.
+
+    It is deliberately not added to the session: a stale APScheduler entry for
+    a deleted/disabled row must not create a new history row on every tick.
+    """
+    return ScheduledJobRun(
+        job_id=job_id,
+        url=url,
+        method=method,
+        request_headers=None,
+        response_headers=None,
+        response_body=None,
+        response_body_truncated=False,
+        response_size=None,
+        status_code=None,
+        success=False,
+        duration_ms=max(0, int((time.perf_counter() - started) * 1000)),
+        error=reason,
+        ran_at=datetime.now(timezone.utc),
+    )
 
 
 async def is_mapping_backed(url: str, method: str) -> bool:
@@ -591,8 +624,21 @@ async def execute_scheduled_job(job_id: str, url: str, method: str) -> Scheduled
         async with semaphore:
             async with SchedulerSessionLocal() as db:
                 row = await _fetch_job(db, job_id)
-            headers = load_headers(row.headers) if row is not None else None
-            body = row.body if row is not None else None
+
+            # The live APScheduler entry can outlive a disable/delete (for
+            # example when the database is changed outside this process).
+            # Re-read the row on every tick and stop before any outbound call.
+            if row is None or not row.enabled:
+                reason = (
+                    "Scheduled job not found"
+                    if row is None
+                    else "Scheduled job is disabled"
+                )
+                logger.info("Skipping scheduled job %s: %s", job_id, reason)
+                return _skipped_run(job_id, url, method, reason, started)
+
+            headers = load_headers(row.headers)
+            body = row.body
 
             if client is None or client.is_closed:
                 temporary_client = httpx.AsyncClient(
@@ -716,4 +762,6 @@ async def run_job_now(db: AsyncSession, job_id: str) -> ScheduledJobRun:
     row = await _fetch_job(db, job_id)
     if row is None:
         raise SchedulerNotFoundError("Scheduled job not found")
+    if not row.enabled:
+        raise SchedulerJobDisabledError("Scheduled job is disabled")
     return await execute_scheduled_job(row.job_id, row.url, row.method)
