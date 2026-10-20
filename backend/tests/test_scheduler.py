@@ -208,6 +208,108 @@ class SchedulerIntegrationTests(unittest.TestCase):
             """
         )
 
+    def test_existing_cron_job_can_be_edited(self):
+        run_isolated(
+            """
+            import asyncio
+            from backend.schemas.scheduled_job import ScheduledJobUpdate
+
+            async def check():
+                async with SchedulerSessionLocal() as db:
+                    db.add(
+                        ScheduledJob(
+                            job_id="edit-job",
+                            name="Original",
+                            url="https://example.test/health",
+                            method="GET",
+                            interval_seconds=60,
+                            enabled=True,
+                        )
+                    )
+                    await db.commit()
+
+                async with SchedulerSessionLocal() as db:
+                    updated = await scheduler_service.update_job(
+                        db,
+                        "edit-job",
+                        ScheduledJobUpdate(
+                            name="Renamed",
+                            url="https://example.test/other",
+                            method="POST",
+                            cron="*/2 * * * *",
+                            headers={"X-Api-Key": "secret"},
+                            body='{"a": 1}',
+                        ),
+                    )
+                    assert updated.name == "Renamed"
+                    assert updated.url == "https://example.test/other"
+                    assert updated.method == "POST"
+                    assert updated.cron == "*/2 * * * *"
+                    # A cron expression replaces the stored interval.
+                    assert updated.interval_seconds is None
+                    assert scheduler_service.load_headers(updated.headers) == {
+                        "X-Api-Key": "secret"
+                    }
+                    assert updated.body == '{"a": 1}'
+
+                async with SchedulerSessionLocal() as db:
+                    stored = await scheduler_service._fetch_job(db, "edit-job")
+                assert stored.cron == "*/2 * * * *"
+                assert stored.interval_seconds is None
+                assert stored.url == "https://example.test/other"
+
+                # Switching back to an interval drops the cron expression.
+                async with SchedulerSessionLocal() as db:
+                    switched = await scheduler_service.update_job(
+                        db, "edit-job", ScheduledJobUpdate(interval_seconds=30)
+                    )
+                assert switched.interval_seconds == 30
+                assert switched.cron is None
+                assert switched.url == "https://example.test/other"
+
+                # The headers and the body can be cleared.
+                async with SchedulerSessionLocal() as db:
+                    cleared = await scheduler_service.update_job(
+                        db,
+                        "edit-job",
+                        ScheduledJobUpdate(headers=None, body=None, name=None),
+                    )
+                assert cleared.headers is None and cleared.body is None
+                assert cleared.name is None
+
+                # A body on a method that cannot carry one is rejected and
+                # leaves the stored job untouched.
+                async with SchedulerSessionLocal() as db:
+                    try:
+                        await scheduler_service.update_job(
+                            db,
+                            "edit-job",
+                            ScheduledJobUpdate(method="GET", body='{"a": 1}'),
+                        )
+                    except ValueError:
+                        pass
+                    else:
+                        raise AssertionError("a body on GET was accepted")
+                async with SchedulerSessionLocal() as db:
+                    stored = await scheduler_service._fetch_job(db, "edit-job")
+                assert stored.method == "POST"
+                assert stored.body is None
+
+                # A missing job is reported, never created.
+                async with SchedulerSessionLocal() as db:
+                    try:
+                        await scheduler_service.update_job(
+                            db, "missing-job", ScheduledJobUpdate(name="x")
+                        )
+                    except scheduler_service.SchedulerNotFoundError:
+                        pass
+                    else:
+                        raise AssertionError("a missing job was updated")
+
+            asyncio.run(check())
+            """
+        )
+
     def test_scheduler_payload_validation_rejects_invalid_inputs(self):
         run_isolated(
             """

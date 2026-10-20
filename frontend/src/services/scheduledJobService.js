@@ -32,6 +32,11 @@ export const toggleScheduledJob = async (jobId, enabled) => {
 	return response.data;
 };
 
+export const updateScheduledJob = async (jobId, data) => {
+	const response = await api.put(`/scheduled-jobs/${jobId}`, data);
+	return response.data;
+};
+
 export const deleteScheduledJob = async (jobId) => {
 	const response = await api.delete(`/scheduled-jobs/${jobId}`);
 	return response.data;
@@ -49,6 +54,7 @@ export default {
 	getScheduledRunDetail,
 	createScheduledJob,
 	toggleScheduledJob,
+	updateScheduledJob,
 	deleteScheduledJob,
 	runScheduledJob,
 };

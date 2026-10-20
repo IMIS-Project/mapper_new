@@ -30,7 +30,7 @@ from backend.db.scheduler_session import (
 )
 from backend.db.session import AsyncSessionLocal
 from backend.models.scheduled_job import ScheduledJob, ScheduledJobRun
-from backend.schemas.scheduled_job import ScheduledJobCreate
+from backend.schemas.scheduled_job import METHODS_WITH_BODY, ScheduledJobCreate, ScheduledJobUpdate
 from backend.services import mapping_job_service
 from backend.services.log_writer import write_call_log
 from backend.services.scheduler_security import (
@@ -335,6 +335,106 @@ async def create_job(
             scheduler.remove_job(row.job_id)
         except JobLookupError:
             pass
+        raise
+    return row
+
+
+async def update_job(
+    db: AsyncSession, job_id: str, payload: ScheduledJobUpdate
+) -> ScheduledJob:
+    """Apply a partial edit to an existing cron job.
+
+    Only the fields present in ``payload`` are changed. The live APScheduler
+    entry is replaced so the new URL, method and schedule take effect on the
+    next tick, and a disabled job stays unscheduled.
+    """
+    row = await _fetch_job(db, job_id)
+    if row is None:
+        raise SchedulerNotFoundError("Scheduled job not found")
+
+    data = payload.model_dump(exclude_unset=True)
+
+    # The schedule is switched by sending the new kind: a cron expression
+    # replaces any interval and an interval replaces any cron expression.
+    has_cron = "cron" in data
+    has_interval = "interval_seconds" in data
+    if has_cron and has_interval:
+        raise ValueError("provide exactly one of cron or interval_seconds")
+    if has_cron:
+        cron = data["cron"]
+        interval_seconds = None
+    elif has_interval:
+        cron = None
+        interval_seconds = data["interval_seconds"]
+    else:
+        cron = row.cron
+        interval_seconds = row.interval_seconds
+    if (cron is None) == (interval_seconds is None):
+        raise ValueError("provide exactly one of cron or interval_seconds")
+
+    url = str(data.get("url") or row.url)
+    method = str(data.get("method") or row.method).strip().upper()
+    name = data["name"] if "name" in data else row.name
+    headers = dump_headers(data["headers"]) if "headers" in data else row.headers
+    body = data["body"] if "body" in data else row.body
+
+    if body and method not in METHODS_WITH_BODY:
+        raise ValueError(f"{method} requests cannot carry a body")
+
+    # A new destination has to clear the same allowlist a new job does.
+    if url != row.url or method != row.method:
+        if not await is_mapping_backed(url, method):
+            await validate_destination_async(
+                mapping_job_service.resolve_internal_url(url)
+            )
+    build_trigger(cron=cron, interval_seconds=interval_seconds)
+
+    was_enabled = row.enabled
+    row.name = name
+    row.url = url
+    row.method = method
+    row.headers = headers
+    row.body = body
+    row.cron = cron
+    row.interval_seconds = interval_seconds
+    row.updated_at = local_now()
+
+    try:
+        if was_enabled:
+            # ``replace_existing`` swaps the trigger, the URL and the method
+            # of the live entry in one go. A scheduler that is not running
+            # yet still stores the edit: the entry is rebuilt at startup.
+            try:
+                _add_live_job(row)
+            except SchedulerNotRunningError:
+                logger.warning(
+                    "Scheduler is not running; job %s was edited but not scheduled",
+                    job_id,
+                )
+        else:
+            try:
+                scheduler.remove_job(job_id)
+            except (JobLookupError, SchedulerNotRunningError):
+                pass
+        await db.commit()
+        await db.refresh(row)
+    except Exception:
+        await db.rollback()
+        try:
+            restored = await _fetch_job(db, job_id)
+            if restored is not None and restored.enabled:
+                _restore_live_job(
+                    restored.job_id,
+                    restored.url,
+                    restored.method,
+                    restored.name,
+                    restored.cron,
+                    restored.interval_seconds,
+                )
+        except Exception:
+            logger.exception(
+                "Could not restore scheduler state after a failed job edit"
+            )
         raise
     return row
 

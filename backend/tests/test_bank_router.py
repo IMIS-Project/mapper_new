@@ -94,7 +94,6 @@ class CatalogTests(unittest.TestCase):
 
     def test_get_operations_declare_a_single_cnic_parameter(self):
         gets = [op for op in bank_router.BANK_OPERATIONS if op["method"] == "GET"]
-        self.assertTrue(gets, "expected the beneficiary lookups to be catalogued")
 
         for op in gets:
             with self.subTest(operation=op["id"]):
@@ -132,7 +131,7 @@ class CatalogTests(unittest.TestCase):
         }
         self.assertEqual(
             account_opening,
-            {"sspa-registration", "beneficiary-lookup-path", "beneficiary-lookup-query"},
+            {"sspa-registration"},
         )
 
     def test_removed_account_opening_endpoints_are_gone(self):
@@ -197,7 +196,6 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(digits_of("c2c-payment", "Mobile_No"), 11)
         self.assertEqual(digits_of("sspa-registration", "CustomerCNIC"), 13)
         self.assertEqual(digits_of("sspa-registration", "MobileNumber"), 11)
-        self.assertEqual(digits_of("beneficiary-lookup-path", "cnic"), 13)
 
     def test_every_field_declares_its_type(self):
         """The JSON view documents the schema, so no field may be untyped."""
@@ -495,54 +493,6 @@ class ProxyTests(_BankCall, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.request_body["Password"], bank_router.MASK)
         self.assertNotIn("S3cret!", json.dumps(result.request_body))
 
-    async def test_beneficiary_lookup_substitutes_the_path_parameter(self):
-        result, _ = await self.call(
-            operation_id="beneficiary-lookup-path",
-            payload={"cnic": "35202-1234567-1"},
-            response=_response(200, {"data": {"CustomerName": "Ali"}}),
-        )
-        args, _kw = self._last_client_args
-        self.assertEqual(args[0], "GET")
-        self.assertEqual(
-            args[1],
-            "https://imis.test:9001/integration/imis/api/compliance/beneficiary/35202-1234567-1",
-        )
-        self.assertIsNone(result.request_body)
-        self.assertEqual(result.targetMethod, "GET")
-        self.assertTrue(result.success)
-
-    async def test_beneficiary_lookup_query_variant_sends_a_query_param(self):
-        await self.call(
-            operation_id="beneficiary-lookup-query",
-            payload={"cnic": "3520212345671"},
-            response=_response(200, {"data": {}}),
-        )
-        args, kwargs = self._last_client_args
-        self.assertEqual(args[0], "GET")
-        self.assertEqual(
-            args[1],
-            "https://imis.test:9001/integration/imis/api/compliance/beneficiary-details"
-            "?cnic=3520212345671",
-        )
-        self.assertNotIn("params", kwargs)
-
-    async def test_get_does_not_send_a_content_type(self):
-        await self.call(
-            operation_id="beneficiary-lookup-query",
-            payload={"cnic": "3520212345671"},
-            response=_response(200, {"data": {}}),
-        )
-        headers = self._last_client_args[1]["headers"]
-        self.assertNotIn("Content-Type", headers)
-        self.assertEqual(headers["Accept"], "application/json")
-
-    async def test_missing_cnic_is_rejected_before_calling_out(self):
-        client = _client(_response(200, {}))
-        with self.assertRaises(HTTPException) as ctx:
-            await self.call(operation_id="beneficiary-lookup-path", client=client)
-        self.assertEqual(ctx.exception.status_code, 400)
-        client.request.assert_not_awaited()
-
 
 class TransportTests(_BankCall, unittest.IsolatedAsyncioTestCase):
     async def test_transport_failure_becomes_502(self):
@@ -759,18 +709,6 @@ class CallLogTests(_BankCall, unittest.IsolatedAsyncioTestCase):
         self.assertEqual(entry["external_status_code"], 200)
         self.assertTrue(entry["success"])
         self.assertIsNone(entry["error"])
-
-    async def test_get_calls_record_the_method(self):
-        _result, tasks = await self.call(
-            operation_id="beneficiary-lookup-query",
-            payload={"cnic": "3520212345671"},
-            response=_response(200, {"data": {}}),
-        )
-        entry = _logged(tasks)
-        self.assertEqual(entry["method"], "GET")
-        self.assertEqual(
-            entry["path"], "/integration/imis/api/compliance/beneficiary-details"
-        )
 
     async def test_failed_call_is_logged_with_its_error(self):
         _result, tasks = await self.call(

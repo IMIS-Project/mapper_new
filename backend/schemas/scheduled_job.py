@@ -24,7 +24,8 @@ from backend.schemas.common import LocalDateTime
 _HTTP_URL = TypeAdapter(HttpUrl)
 _METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
 
-_METHODS_WITH_BODY = {"POST", "PUT", "PATCH", "DELETE", "OPTIONS"}
+#: Methods the scheduler accepts a request body for.
+METHODS_WITH_BODY = {"POST", "PUT", "PATCH", "DELETE", "OPTIONS"}
 
 
 _HEADER_NAME = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
@@ -155,7 +156,59 @@ class ScheduledJobCreate(BaseModel):
     def validate_schedule(self) -> "ScheduledJobCreate":
         if (self.cron is None) == (self.interval_seconds is None):
             raise ValueError("provide exactly one of cron or interval_seconds")
-        if self.body and self.method not in _METHODS_WITH_BODY:
+        if self.body and self.method not in METHODS_WITH_BODY:
+            raise ValueError(f"{self.method} requests cannot carry a body")
+        return self
+
+
+class ScheduledJobUpdate(BaseModel):
+    """Partial update payload for an existing cron job.
+
+    Every field is optional; only the ones actually sent are changed. The
+    schedule is switched by sending the new kind: ``cron`` replaces any
+    interval and ``interval_seconds`` replaces any cron expression, so the two
+    are never set at the same time. ``headers`` and ``body`` accept ``null``
+    to clear them.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, max_length=255)
+    url: ScheduledJobUrl | None = None
+    method: str | None = Field(default=None, min_length=1, max_length=16)
+    headers: ScheduledJobHeaders = None
+    body: ScheduledJobBody = None
+    cron: str | None = Field(default=None, max_length=255)
+    interval_seconds: int | None = Field(default=None, gt=0)
+
+    @field_validator("method", mode="before")
+    @classmethod
+    def normalize_method(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        method = str(value).strip().upper()
+        if method not in _METHODS:
+            raise ValueError("Unsupported HTTP method")
+        return method
+
+    @field_validator("cron", mode="before")
+    @classmethod
+    def normalize_cron(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        return str(value).strip() or None
+
+    @model_validator(mode="after")
+    def validate_update(self) -> "ScheduledJobUpdate":
+        provided = self.model_fields_set
+        if "cron" in provided and "interval_seconds" in provided:
+            raise ValueError("provide exactly one of cron or interval_seconds")
+        if (
+            "body" in provided
+            and self.body
+            and self.method
+            and self.method not in METHODS_WITH_BODY
+        ):
             raise ValueError(f"{self.method} requests cannot carry a body")
         return self
 
@@ -225,6 +278,7 @@ class ScheduledJobRunResponse(ScheduledJobRunSummary):
 
 
 __all__ = [
+    "METHODS_WITH_BODY",
     "ScheduledJobBody",
     "ScheduledJobCreate",
     "ScheduledJobHeaders",
@@ -233,4 +287,5 @@ __all__ = [
     "ScheduledJobRunResponse",
     "ScheduledJobRunSummary",
     "ScheduledJobToggle",
+    "ScheduledJobUpdate",
 ]

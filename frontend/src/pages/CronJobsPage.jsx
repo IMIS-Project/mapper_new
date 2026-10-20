@@ -65,6 +65,7 @@ import {
 	formatRelative,
 	getErrorMessage,
 	groupParametersByLocation,
+	headersToRows,
 	initialJobForm,
 	isAbsoluteHttpUrl,
 	mappingExternalUrl,
@@ -101,6 +102,9 @@ export default function CronJobsPage() {
 	const [historyJobId, setHistoryJobId] = useState("");
 	const [selectedRunId, setSelectedRunId] = useState(null);
 	const [saving, setSaving] = useState(false);
+	const [editingJob, setEditingJob] = useState(null);
+	const [editForm, setEditForm] = useState(null);
+	const [savingEdit, setSavingEdit] = useState(false);
 	const [actionId, setActionId] = useState("");
 	const jobsQuery = useApiQuery(["scheduled-jobs"], scheduledJobService.getScheduledJobs, { refetchInterval: 15000 });
 	const runsQuery = useApiQuery(
@@ -231,6 +235,20 @@ export default function CronJobsPage() {
 		},
 	);
 
+	const updateMutation = useApiMutation(
+		({ jobId, payload }) => scheduledJobService.updateScheduledJob(jobId, payload),
+		{
+			onSuccess: async () => {
+				setSavingEdit(false);
+				setEditingJob(null);
+				setEditForm(null);
+				await queryClient.invalidateQueries({ queryKey: ["scheduled-jobs"] });
+				showSnackbar("Cron job updated", "success");
+			},
+			onError: (error) => { setSavingEdit(false); showSnackbar(readError(error), "error"); },
+		},
+	);
+
 	const submit = (event) => {
 		event.preventDefault();
 		setSaving(true);
@@ -243,9 +261,69 @@ export default function CronJobsPage() {
 		createMutation.mutate(payload);
 	};
 	const act = (action, job) => {
+		if (action === "edit") {
+			openEdit(job);
+			return;
+		}
 		if (action === "delete" && !window.confirm(`Delete “${job.name || job.job_id}”? Past runs will be kept.`)) return;
 		setActionId(job.job_id);
 		actionMutation.mutate({ action, job });
+	};
+
+	/**
+	 * Open the edit dialog for a job. The form starts from the stored values,
+	 * so nothing is lost when the dialog is closed without saving.
+	 */
+	const openEdit = (job) => {
+		setEditingJob(job);
+		setEditForm({
+			name: job.name || "",
+			url: job.url || "",
+			method: job.method || "GET",
+			scheduleType: job.cron ? "cron" : "interval",
+			intervalSeconds: job.interval_seconds ? String(job.interval_seconds) : "60",
+			cron: job.cron || "*/5 * * * *",
+			headers: headersToRows(job.headers),
+			body: job.body || "",
+		});
+	};
+	const closeEdit = () => {
+		if (savingEdit) return;
+		setEditingJob(null);
+		setEditForm(null);
+	};
+	const updateEditForm = (key, value) => setEditForm((previous) => {
+		if (!previous) return previous;
+		const next = { ...previous, [key]: value };
+		// A method that carries no body cannot keep one.
+		if (key === "method" && !supportsBody(value)) next.body = "";
+		return next;
+	});
+	const updateEditHeaderRow = (index, key, value) => setEditForm((previous) => ({
+		...previous,
+		headers: previous.headers.map((row, position) => (position === index ? { ...row, [key]: value } : row)),
+	}));
+	const addEditHeaderRow = () => setEditForm((previous) => ({ ...previous, headers: [...previous.headers, { name: "", value: "" }] }));
+	const removeEditHeaderRow = (index) => setEditForm((previous) => ({ ...previous, headers: previous.headers.filter((_, position) => position !== index) }));
+
+	const submitEdit = (event) => {
+		event.preventDefault();
+		if (!editForm || !editingJob) return;
+		setSavingEdit(true);
+		const payload = {
+			url: editForm.url.trim(),
+			method: editForm.method,
+			name: editForm.name.trim() || null,
+		};
+		// Only the schedule kind that is set is sent: the backend replaces
+		// the stored one with it.
+		payload[editForm.scheduleType === "interval" ? "interval_seconds" : "cron"] = editForm.scheduleType === "interval"
+			? Number.parseInt(editForm.intervalSeconds, 10)
+			: editForm.cron.trim();
+		const headers = rowsToHeaders(editForm.headers);
+		payload.headers = Object.keys(headers).length ? headers : null;
+		payload.body = editForm.body.trim() ? editForm.body : null;
+		updateMutation.mutate({ jobId: editingJob.job_id, payload });
 	};
 	const error = jobsQuery.error || runsQuery.error;
 	const refreshing = jobsQuery.isFetching || runsQuery.isFetching;
@@ -283,6 +361,17 @@ export default function CronJobsPage() {
 			<JobTable jobs={jobs} loading={jobsQuery.isLoading} actionId={actionId} onAction={act} />
 			<RunTable runs={runs} loading={runsQuery.isLoading} jobNames={jobNames} historyJobId={historyJobId} onHistoryJobChange={setHistoryJobId} onSelectRun={setSelectedRunId} />
 			<RunDetailDialog runId={selectedRunId} query={runDetailQuery} jobNames={jobNames} onClose={() => setSelectedRunId(null)} />
+			<EditJobDialog
+				job={editingJob}
+				form={editForm}
+				saving={savingEdit}
+				onChange={updateEditForm}
+				onHeaderChange={updateEditHeaderRow}
+				onHeaderAdd={addEditHeaderRow}
+				onHeaderRemove={removeEditHeaderRow}
+				onSubmit={submitEdit}
+				onClose={closeEdit}
+			/>
 		</Box>
 	);
 }
@@ -448,10 +537,65 @@ function HeaderEditor({ rows, onChange, onAdd, onRemove }) {
 	</Box>;
 }
 
+/**
+ * Edit an existing cron job: URL, method, schedule, headers and body. The
+ * job ID is never changed, so the run history stays attached to the job.
+ */
+function EditJobDialog({
+	job,
+	form,
+	saving,
+	onChange,
+	onHeaderChange,
+	onHeaderAdd,
+	onHeaderRemove,
+	onSubmit,
+	onClose,
+}) {
+	if (!job || !form) return null;
+	const bodyAllowed = supportsBody(form.method);
+	return <Dialog open onClose={onClose} maxWidth="md" fullWidth>
+		<DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1.25 }}>
+			<Box sx={{ flex: 1, minWidth: 0 }}>
+				<Typography variant="subtitle1">Edit cron job</Typography>
+				<Typography variant="caption" color="text.secondary" className="mono">{job.job_id}</Typography>
+			</Box>
+			<IconButton onClick={onClose} aria-label="Close edit dialog"><Close /></IconButton>
+		</DialogTitle>
+		<Divider />
+		<DialogContent dividers>
+			{job.mapping ? <Alert severity="info" sx={{ mb: 2, py: 0.25 }}>
+				This job runs the mapped flow for {job.mapping.endpoint_code || `mapping #${job.mapping.endpoint_id}`}. Changing the URL or the method detaches it from that mapping.
+			</Alert> : null}
+			<Box component="form" id="edit-cron-job-form" onSubmit={onSubmit}>
+				<Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "1fr 1fr", lg: "1.4fr .8fr .6fr" }, gap: 1.5 }}>
+					<TextField label="API URL" value={form.url} onChange={(event) => onChange("url", event.target.value)} required fullWidth size="small" helperText="The API this job calls on every tick." />
+					<TextField label="Display name" value={form.name} onChange={(event) => onChange("name", event.target.value)} fullWidth size="small" />
+					<TextField select label="Method" value={form.method} onChange={(event) => onChange("method", event.target.value)} fullWidth size="small">{METHODS.map((method) => <MenuItem key={method} value={method}>{method}</MenuItem>)}</TextField>
+				</Box>
+				<Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "180px 1fr" }, gap: 1.5, mt: 1.5 }}>
+					<TextField select label="Schedule type" value={form.scheduleType} onChange={(event) => onChange("scheduleType", event.target.value)} fullWidth size="small"><MenuItem value="interval">Every interval</MenuItem><MenuItem value="cron">Cron expression</MenuItem></TextField>
+					{form.scheduleType === "interval" ? <TextField label="Interval in seconds" type="number" inputProps={{ min: 1, step: 1 }} value={form.intervalSeconds} onChange={(event) => onChange("intervalSeconds", event.target.value)} required fullWidth size="small" /> : <TextField label="Cron expression" placeholder="*/5 * * * *" helperText="minute hour day month weekday" value={form.cron} onChange={(event) => onChange("cron", event.target.value)} required fullWidth size="small" />}
+				</Box>
+				<HeaderEditor rows={form.headers} onChange={onHeaderChange} onAdd={onHeaderAdd} onRemove={onHeaderRemove} />
+				{bodyAllowed ? <Box sx={{ mt: 1.5 }}>
+					<Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.75 }}><Typography variant="subtitle2">Request body</Typography><Typography variant="caption" color="text.secondary">Clear the field to remove the stored body.</Typography></Stack>
+					<TextField label="Body" value={form.body} onChange={(event) => onChange("body", event.target.value)} fullWidth multiline minRows={4} maxRows={14} size="small" className="mono" InputProps={{ sx: { fontFamily: "var(--font-mono)", fontSize: "0.8rem" } }} />
+				</Box> : null}
+			</Box>
+		</DialogContent>
+		<DialogActions sx={{ px: 2.5, py: 1.5 }}>
+			<Box sx={{ flex: 1 }} />
+			<Button size="small" onClick={onClose} disabled={saving}>Cancel</Button>
+			<Button size="small" variant="contained" type="submit" form="edit-cron-job-form" disabled={saving || !form.url.trim()} startIcon={saving ? <CircularProgress size={15} color="inherit" /> : <Done />}>Save changes</Button>
+		</DialogActions>
+	</Dialog>;
+}
+
 function JobTable({ jobs, loading, actionId, onAction }) {
 	return <Paper elevation={0} sx={{ mb: 2, borderRadius: 3, border: "1px solid", borderColor: "divider", overflow: "hidden" }}>
 		<Box sx={{ px: 2, py: 1.5, display: "flex", alignItems: "center", gap: 1.25, borderBottom: "1px solid", borderColor: "divider" }}><Schedule sx={{ color: "text.secondary", fontSize: 20 }} /><Typography variant="subtitle2">Scheduled jobs</Typography><Chip size="small" label={jobs.length} /></Box>
-		{loading ? <Box sx={{ py: 6, textAlign: "center" }}><CircularProgress size={26} /></Box> : jobs.length === 0 ? <Box sx={{ py: 6, textAlign: "center" }}><Typography variant="body2" color="text.secondary">No cron jobs yet.</Typography></Box> : <TableContainer><Table size="small"><TableHead><TableRow><TableCell>Job</TableCell><TableCell>Schedule</TableCell><TableCell>Next run</TableCell><TableCell>Last result</TableCell><TableCell align="right">Actions</TableCell></TableRow></TableHead><TableBody>{jobs.map((job) => { const busy = actionId === job.job_id; return <TableRow key={job.job_id} hover><TableCell><Typography variant="body2" fontWeight={600}>{job.name || job.job_id}</Typography><Typography variant="caption" color="text.secondary" className="mono">{job.job_id} · {job.method} · {job.url}</Typography>{job.mapping ? <Tooltip title={`External: ${job.mapping.external_url} → Internal: ${job.mapping.internal_url}`}><Chip size="small" icon={<AccountTree fontSize="small" />} label={`${job.mapping.endpoint_code || `Mapping #${job.mapping.endpoint_id}`} · ${job.mapping.parameter_count} params`} sx={{ mt: 0.5, height: 20, fontSize: "0.62rem" }} /></Tooltip> : null}</TableCell><TableCell><Typography variant="body2" className="mono">{scheduleLabel(job)}</Typography></TableCell><TableCell><Typography variant="body2">{formatDate(job.next_run_time)}</Typography></TableCell><TableCell>{job.last_run_at ? <Chip size="small" color={job.last_success ? "success" : "error"} label={job.last_success ? "Success" : "Failed"} /> : <Typography variant="body2" color="text.disabled">No runs yet</Typography>}<Typography variant="caption" display="block" color="text.secondary">{formatDate(job.last_run_at)}</Typography></TableCell><TableCell align="right"><Switch size="small" checked={job.enabled} disabled={busy} onChange={() => onAction("toggle", job)} inputProps={{ "aria-label": `Toggle ${job.job_id}` }} /><Tooltip title="Run now"><span><IconButton size="small" disabled={busy} onClick={() => onAction("run", job)} aria-label={`Run ${job.job_id} now`}>{busy ? <CircularProgress size={17} /> : <PlayArrow fontSize="small" />}</IconButton></span></Tooltip><Tooltip title="Delete"><span><IconButton size="small" disabled={busy} onClick={() => onAction("delete", job)} aria-label={`Delete ${job.job_id}`}><DeleteOutline fontSize="small" /></IconButton></span></Tooltip></TableCell></TableRow>; })}</TableBody></Table></TableContainer>}
+		{loading ? <Box sx={{ py: 6, textAlign: "center" }}><CircularProgress size={26} /></Box> : jobs.length === 0 ? <Box sx={{ py: 6, textAlign: "center" }}><Typography variant="body2" color="text.secondary">No cron jobs yet.</Typography></Box> : <TableContainer><Table size="small"><TableHead><TableRow><TableCell>Job</TableCell><TableCell>Schedule</TableCell><TableCell>Next run</TableCell><TableCell>Last result</TableCell><TableCell align="right">Actions</TableCell></TableRow></TableHead><TableBody>{jobs.map((job) => { const busy = actionId === job.job_id; return <TableRow key={job.job_id} hover><TableCell><Typography variant="body2" fontWeight={600}>{job.name || job.job_id}</Typography><Typography variant="caption" color="text.secondary" className="mono">{job.job_id} · {job.method} · {job.url}</Typography>{job.mapping ? <Tooltip title={`External: ${job.mapping.external_url} → Internal: ${job.mapping.internal_url}`}><Chip size="small" icon={<AccountTree fontSize="small" />} label={`${job.mapping.endpoint_code || `Mapping #${job.mapping.endpoint_id}`} · ${job.mapping.parameter_count} params`} sx={{ mt: 0.5, height: 20, fontSize: "0.62rem" }} /></Tooltip> : null}</TableCell><TableCell><Typography variant="body2" className="mono">{scheduleLabel(job)}</Typography></TableCell><TableCell><Typography variant="body2">{formatDate(job.next_run_time)}</Typography></TableCell><TableCell>{job.last_run_at ? <Chip size="small" color={job.last_success ? "success" : "error"} label={job.last_success ? "Success" : "Failed"} /> : <Typography variant="body2" color="text.disabled">No runs yet</Typography>}<Typography variant="caption" display="block" color="text.secondary">{formatDate(job.last_run_at)}</Typography></TableCell><TableCell align="right"><Switch size="small" checked={job.enabled} disabled={busy} onChange={() => onAction("toggle", job)} inputProps={{ "aria-label": `Toggle ${job.job_id}` }} /><Tooltip title="Edit job"><span><IconButton size="small" disabled={busy} onClick={() => onAction("edit", job)} aria-label={`Edit ${job.job_id}`}><EditOutlined fontSize="small" /></IconButton></span></Tooltip><Tooltip title="Run now"><span><IconButton size="small" disabled={busy} onClick={() => onAction("run", job)} aria-label={`Run ${job.job_id} now`}>{busy ? <CircularProgress size={17} /> : <PlayArrow fontSize="small" />}</IconButton></span></Tooltip><Tooltip title="Delete"><span><IconButton size="small" disabled={busy} onClick={() => onAction("delete", job)} aria-label={`Delete ${job.job_id}`}><DeleteOutline fontSize="small" /></IconButton></span></Tooltip></TableCell></TableRow>; })}</TableBody></Table></TableContainer>}
 	</Paper>;
 }
 

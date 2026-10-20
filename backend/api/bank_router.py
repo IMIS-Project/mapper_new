@@ -197,45 +197,6 @@ BANK_OPERATIONS: tuple[dict[str, Any], ...] = (
         ),
     },
     {
-        "id": "beneficiary-lookup-path",
-        "label": "Beneficiary Lookup (path)",
-        "group": "account-opening",
-        "method": "GET",
-        "path": "/integration/imis/api/compliance/beneficiary/{cnic}",
-        "paramStyle": "path",
-        "paramName": "cnic",
-        "summary": (
-            "Reads the beneficiary demographics the SSPA registration form needs, "
-            "keyed by CNIC in the path. Read-only - it never reaches the bank."
-        ),
-        "downstream": "None - IMIS database lookup (ubr_person, ubr_household, ...).",
-        "tokenFlow": "none",
-        "tokenHeader": None,
-        "requiresCorrelationId": False,
-        "tokenOutcome": None,
-        "fields": (
-            _field("cnic", "CNIC", required=True, help=_CNIC_HELP, digits=13),
-        ),
-    },
-    {
-        "id": "beneficiary-lookup-query",
-        "label": "Beneficiary Lookup (query)",
-        "group": "account-opening",
-        "method": "GET",
-        "path": "/integration/imis/api/compliance/beneficiary-details",
-        "paramStyle": "query",
-        "paramName": "cnic",
-        "summary": "Same lookup as the path variant, addressed as a query parameter.",
-        "downstream": "None - IMIS database lookup (ubr_person, ubr_household, ...).",
-        "tokenFlow": "none",
-        "tokenHeader": None,
-        "requiresCorrelationId": False,
-        "tokenOutcome": None,
-        "fields": (
-            _field("cnic", "CNIC", required=True, help=_CNIC_HELP, digits=13),
-        ),
-    },
-    {
         "id": "c2c-disbursement",
         "label": "C2C Disbursement",
         "group": "c2c",

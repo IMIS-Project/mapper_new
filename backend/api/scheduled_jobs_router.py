@@ -16,6 +16,7 @@ from backend.schemas.scheduled_job import (
     ScheduledJobRunResponse,
     ScheduledJobRunSummary,
     ScheduledJobToggle,
+    ScheduledJobUpdate,
 )
 from backend.services import mapping_job_service, scheduler_service
 from backend.services.central_auth import CentralUser
@@ -164,6 +165,30 @@ async def toggle_scheduled_job(
         raise HTTPException(status_code=422, detail="Invalid schedule") from None
     except scheduler_service.SchedulerNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return await _response(db, row)
+
+
+@router.put("/scheduled-jobs/{job_id}", response_model=ScheduledJobResponse)
+async def update_scheduled_job(
+    job_id: str,
+    payload: ScheduledJobUpdate,
+    db: AsyncSession = Depends(get_scheduler_db),
+    _current_user: User = Depends(get_current_active_user),
+):
+    """Edit an existing cron job in place.
+
+    Only the fields present in the payload are changed; the schedule is
+    switched by sending the new kind (a cron expression replaces an interval
+    and an interval replaces a cron expression).
+    """
+    try:
+        row = await scheduler_service.update_job(db, job_id, payload)
+    except UnsafeDestinationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except scheduler_service.SchedulerNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Scheduled job not found") from exc
     return await _response(db, row)
 
 
