@@ -24,7 +24,7 @@ def build_mock_result(
         "path": url,
         "request_headers": dict(headers or {}),
         "success": True,
-        "data": endpoint.mock_response,
+        "data": getattr(endpoint, "mock_response", None),
         "status_code": 200,
         "response_time_ms": 0,
         "response_headers": {"Content-Type": "application/json"},

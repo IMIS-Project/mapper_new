@@ -59,12 +59,9 @@ if _ENV_PATH.exists():
         for line in fh:
             matched = re.match(r"^(?P<key>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?P<value>.*)\s*$", line)
             if matched and matched.group(1) in _ENV_KEYS_TO_KEEP:
-                _sanitized.append(line.rstrip("
-"))
+                _sanitized.append(line.rstrip("\n"))
     with _ENV_SANDBOX.open("w", encoding="utf-8") as fh:
-        fh.write("
-".join(_sanitized) + "
-")
+        fh.write("\n".join(_sanitized) + "\n")
     os.rename(_ENV_SANDBOX, _ENV_PATH)
     atexit.register(lambda: os.rename(_ENV_PATH, _ENV_BACKUP))
 

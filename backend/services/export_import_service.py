@@ -135,9 +135,9 @@ async def export_csv(db) -> bytes:
                 "method": ep.method,
                 "protocol": ep.protocol,
                 "description": ep.description,
-                "mock_enabled": ep.mock_enabled,
-                "tenant_id": ep.tenant_id,
-                "rate_limit_rpm": ep.rate_limit_rpm,
+                "mock_enabled": getattr(ep, "mock_enabled", False),
+                "tenant_id": getattr(ep, "tenant_id", None),
+                "rate_limit_rpm": getattr(ep, "rate_limit_rpm", None),
             }
             if param is not None:
                 row.update(
@@ -218,11 +218,23 @@ def _parse_csv_import(raw: bytes):
     except Exception as exc:
         return [], [{"error": f"Invalid CSV: {exc}"}]
 
-    groups: dict[str, dict] = {}
-    order: list[str] = []
+    groups: dict[tuple, dict] = {}
+    order: list[tuple] = []
     for row in rows:
         code = (row.get("endpoint_code") or "").strip()
-        key = code or (row.get("source_api_url") or row.get("target_api_url") or "")
+        source_url = (row.get("source_api_url") or "").strip()
+        target_url = (row.get("target_api_url") or "").strip()
+        method = (row.get("method") or "").strip()
+        protocol = (row.get("protocol") or "").strip()
+        description = (row.get("description") or "").strip()
+        mock_enabled = (row.get("mock_enabled") or "").strip()
+        tenant_id = (row.get("tenant_id") or "").strip()
+        rate_limit_rpm = (row.get("rate_limit_rpm") or "").strip()
+        # endpoint_code is NOT unique in the store, so grouping by code alone
+        # collapses distinct endpoints. Key on the full endpoint-level row so a
+        # round-trip is lossless.
+        key = (code, source_url, target_url, method, protocol, description,
+               mock_enabled, tenant_id, rate_limit_rpm) if (code or source_url or target_url) else None
         if not key:
             continue
         if key not in groups:
@@ -233,7 +245,7 @@ def _parse_csv_import(raw: bytes):
                     "source_api_url": row.get("source_api_url") or "",
                     "target_api_url": row.get("target_api_url") or "",
                     "method": row.get("method") or "POST",
-                    "protocol": row.get("protocol"),
+                    "protocol": row.get("protocol") or None,
                     "description": row.get("description"),
                     "mock_enabled": _as_bool(row.get("mock_enabled")),
                     "tenant_id": row.get("tenant_id"),

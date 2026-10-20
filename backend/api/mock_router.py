@@ -41,8 +41,8 @@ async def get_mock_config(
     endpoint = await _get_or_404(db, endpoint_id)
     return {
         "endpoint_id": endpoint.id,
-        "mock_enabled": endpoint.mock_enabled,
-        "mock_response": endpoint.mock_response,
+        "mock_enabled": getattr(endpoint, "mock_enabled", None),
+        "mock_response": getattr(endpoint, "mock_response", None),
     }
 
 
@@ -58,6 +58,6 @@ async def set_mock_config(
     endpoint = await endpoint_service.update_endpoint(db, endpoint_id, data)
     return {
         "endpoint_id": endpoint.id,
-        "mock_enabled": endpoint.mock_enabled,
-        "mock_response": endpoint.mock_response,
+        "mock_enabled": getattr(endpoint, "mock_enabled", None),
+        "mock_response": getattr(endpoint, "mock_response", None),
     }
