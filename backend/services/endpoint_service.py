@@ -26,6 +26,9 @@ __all__ = [
 ]
 
 _SENSITIVE_FIELDS = ("sftp_password", "api_password")
+# Schema-only fields (mock_*, tenant_id, rate_limit_rpm) are not columns on
+# the deployed api_endpoint table, so never pass them to the ORM model.
+_ENDPOINT_FIELDS = frozenset(ApiEndpoint.__mapper__.columns.keys())
 
 
 def generate_endpoint_code() -> str:
@@ -149,7 +152,9 @@ async def get_endpoint(db: AsyncSession, endpoint_id: int | str) -> ApiEndpoint 
 
 async def create_endpoint_flush(db: AsyncSession, data: dict[str, Any]) -> ApiEndpoint:
 
-    payload = _encrypt_sensitive(data)
+    payload = _encrypt_sensitive(
+        {key: value for key, value in data.items() if key in _ENDPOINT_FIELDS}
+    )
     if not payload.get("endpoint_code"):
         payload["endpoint_code"] = generate_endpoint_code()
     endpoint = ApiEndpoint(**payload)
@@ -173,7 +178,10 @@ async def update_endpoint(
     if endpoint is None:
         return None
 
-    for field, value in _encrypt_sensitive(data).items():
+    prepared = {
+        key: value for key, value in data.items() if key in _ENDPOINT_FIELDS
+    }
+    for field, value in _encrypt_sensitive(prepared).items():
         setattr(endpoint, field, value)
 
     await db.commit()
