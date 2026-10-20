@@ -16,7 +16,7 @@ from backend.core.config import settings
 from backend.core.crypto import decrypt_value_with_fallback
 from backend.models import ApiEndpoint, CallStatusEnum, ParameterMapping
 from backend.services import mock_service, parameter_service, sftp_service
-from backend.services.upstream_auth import apply_upstream_auth
+from backend.services.upstream_auth import apply_upstream_auth, strip_auth_headers
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +74,9 @@ class EndpointSnapshot:
     rate_limit_rpm: int | None = None
     mock_enabled: bool = False
     updated_at: datetime | None = None
+    # ``N`` means the upstream API does not want a bearer/API-key header.
+    # ``None`` keeps the historical behaviour (inject when configured).
+    require_authentication: bool | None = None
     # SFTP-backed endpoints read their data straight from a remote server
     # instead of calling an HTTP upstream.
     protocol: str | None = None
@@ -165,6 +168,7 @@ _ENDPOINT_COLUMNS = (
     "method",
     "is_active",
     "updated_at",
+    "require_authentication",
     "protocol",
     "sftp_host",
     "sftp_port",
@@ -192,6 +196,7 @@ def _endpoint_snapshot(row):
         rate_limit_rpm=None,
         mock_enabled=False,
         updated_at=values.get("updated_at"),
+        require_authentication=values.get("require_authentication"),
         protocol=values.get("protocol"),
         sftp_host=values.get("sftp_host"),
         sftp_port=values.get("sftp_port"),
@@ -488,7 +493,12 @@ class GatewayEngine:
             )
 
             call = await self._call_upstream(
-                upstream_method, upstream_url, body_params, header_params, query_params
+                upstream_method,
+                upstream_url,
+                body_params,
+                header_params,
+                query_params,
+                require_auth=endpoint.require_authentication is not False,
             )
             failure_kind = call.pop("failure_kind")
             upstream_attempted = call.pop("upstream_attempted")
@@ -902,6 +912,8 @@ class GatewayEngine:
         body_params: dict[str, Any],
         header_params: dict[str, Any],
         query_params: dict[str, Any],
+        *,
+        require_auth: bool = True,
     ) -> dict[str, Any]:
         """Perform the upstream call; every failure mode returns a dict."""
         outcome: dict[str, Any] = {
@@ -925,7 +937,17 @@ class GatewayEngine:
 
         started = time.perf_counter()
         try:
-            await apply_upstream_auth(header_params, self.http_client, url)
+            if require_auth:
+                await apply_upstream_auth(
+                    header_params,
+                    self.http_client,
+                    url,
+                    allow_shared=False,
+                )
+            else:
+                # ``require_authentication=N``: never leak a caller/API token
+                # to an upstream that did not ask for one.
+                strip_auth_headers(header_params)
 
             request = self.http_client.build_request(
                 method=method,

@@ -42,6 +42,7 @@ from backend.services.upstream_auth import (
     apply_upstream_auth,
     drop_token_header,
     invalidate_token,
+    strip_auth_headers,
 )
 
 logger = logging.getLogger(__name__)
@@ -452,10 +453,15 @@ async def execute_mapping_job(
             return None
 
         mappings = await engine.load_mappings(endpoint)
+        # The cron job's own credentials belong to its internal target. Do not
+        # forward them to the mapping's external API: that leg only receives a
+        # token when the endpoint says it requires authentication.
+        external_headers = dict(headers or {})
+        strip_auth_headers(external_headers)
         outcome = await engine.execute_resolved(
             endpoint,
             _request_payload(body, internal_url),
-            dict(headers or {}),
+            external_headers,
             internal_url,
             method,
             mappings=mappings,

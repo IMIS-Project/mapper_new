@@ -5,6 +5,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse
 from pydantic_settings import DotEnvSettingsSource
@@ -631,6 +632,156 @@ class SftpHttpFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(outcome.success)
         http.assert_awaited_once()
         sftp.assert_not_awaited()
+
+
+class EndpointAuthTests(unittest.IsolatedAsyncioTestCase):
+    """Only APIs marked as requiring auth receive the caller/job token."""
+
+    @staticmethod
+    def _endpoint(**updates):
+        values = dict(
+            source_api_url="https://upstream.test/items",
+            target_api_url="https://gateway.test/v1/items",
+            method="POST",
+        )
+        values.update(updates)
+        return endpoint_snapshot(**values)
+
+    async def test_require_authentication_false_drops_caller_token(self):
+        client = make_client(status=200)
+        outcome = await GatewayEngine(make_db(), client).execute_resolved(
+            self._endpoint(require_authentication=False),
+            {"a": 1},
+            {
+                "Authorization": "Bearer cron-token",
+                "X-Api-Key": "secret",
+                "X-Trace": "trace-1",
+            },
+            "/v1/items",
+            "POST",
+            mappings=(),
+        )
+
+        self.assertTrue(outcome.success)
+        request = client.send.await_args.args[0]
+        headers = {name.lower(): value for name, value in request.headers.items()}
+        self.assertNotIn("authorization", headers)
+        self.assertNotIn("x-api-key", headers)
+        self.assertEqual(headers.get("x-trace"), "trace-1")
+
+    async def test_require_authentication_false_skips_injection(self):
+        auth = AsyncMock(return_value=True)
+        with patch(
+            "backend.services.gateway_engine.apply_upstream_auth", new=auth
+        ):
+            outcome = await GatewayEngine(make_db(), make_client()).execute_resolved(
+                self._endpoint(require_authentication=False),
+                {"a": 1},
+                {},
+                "/v1/items",
+                "POST",
+                mappings=(),
+            )
+
+        self.assertTrue(outcome.success)
+        auth.assert_not_awaited()
+
+    async def test_require_authentication_true_keeps_caller_token(self):
+        client = make_client(status=200)
+        outcome = await GatewayEngine(make_db(), client).execute_resolved(
+            self._endpoint(require_authentication=True),
+            {"a": 1},
+            {"Authorization": "Bearer caller-token"},
+            "/v1/items",
+            "POST",
+            mappings=(),
+        )
+
+        self.assertTrue(outcome.success)
+        request = client.send.await_args.args[0]
+        self.assertEqual(
+            request.headers.get("authorization"), "Bearer caller-token"
+        )
+
+    async def test_missing_flag_keeps_previous_behaviour(self):
+        client = make_client(status=200)
+        outcome = await GatewayEngine(make_db(), client).execute_resolved(
+            self._endpoint(require_authentication=None),
+            {"a": 1},
+            {"Authorization": "Bearer caller-token"},
+            "/v1/items",
+            "POST",
+            mappings=(),
+        )
+
+        self.assertTrue(outcome.success)
+        request = client.send.await_args.args[0]
+        self.assertEqual(
+            request.headers.get("authorization"), "Bearer caller-token"
+        )
+
+    def test_strip_auth_headers_keeps_non_auth_headers(self):
+        from backend.services.upstream_auth import strip_auth_headers
+
+        headers = {
+            "Authorization": "Bearer token",
+            "X-Api-Key": "key",
+            "X-Auth-Token": "token",
+            "X-Trace": "trace-1",
+            "Content-Type": "application/json",
+        }
+        strip_auth_headers(headers)
+        self.assertEqual(
+            headers,
+            {"X-Trace": "trace-1", "Content-Type": "application/json"},
+        )
+
+    async def test_shared_token_is_scoped_to_configured_hosts(self):
+        from backend.core.config import settings
+        from backend.services import upstream_auth
+
+        client = Mock(spec=httpx.AsyncClient)
+        with (
+            patch.object(
+                settings, "UPSTREAM_AUTH_URL", "https://auth.test/login"
+            ),
+            patch.object(settings, "UPSTREAM_API_TOKENS", {}),
+            patch.object(upstream_auth, "_configured", return_value=True),
+            patch.object(
+                upstream_auth,
+                "_cached_token",
+                new=AsyncMock(return_value="shared-token"),
+            ),
+        ):
+            headers: dict[str, str] = {}
+            injected = await upstream_auth.apply_upstream_auth(
+                headers,
+                client,
+                "https://unrelated.test/api",
+                allow_shared=False,
+            )
+            self.assertFalse(injected)
+            self.assertNotIn("Authorization", headers)
+
+            headers = {}
+            injected = await upstream_auth.apply_upstream_auth(
+                headers,
+                client,
+                "https://unrelated.test/api",
+                allow_shared=True,
+            )
+            self.assertTrue(injected)
+            self.assertIn("Authorization", headers)
+
+            headers = {}
+            injected = await upstream_auth.apply_upstream_auth(
+                headers,
+                client,
+                "https://auth.test/api",
+                allow_shared=False,
+            )
+            self.assertTrue(injected)
+            self.assertIn("Authorization", headers)
 
 
 class MockShortCircuitTests(unittest.IsolatedAsyncioTestCase):

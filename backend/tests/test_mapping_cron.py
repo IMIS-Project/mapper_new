@@ -236,7 +236,13 @@ class MappingCronTests(unittest.TestCase):
                 calls = []
 
                 async def handler(request):
-                    calls.append((str(request.url), json.loads(request.content or b"{}")))
+                    calls.append(
+                        (
+                            str(request.url),
+                            json.loads(request.content or b"{}"),
+                            {name.lower(): value for name, value in request.headers.items()},
+                        )
+                    )
                     if str(request.url).startswith(EXTERNAL_URL):
                         return httpx.Response(200, content=b'{"ref_no": "EXT-9", "status": "PAID"}', request=request)
                     return httpx.Response(200, content=b'{"received": true}', request=request)
@@ -254,10 +260,15 @@ class MappingCronTests(unittest.TestCase):
                 assert len(calls) == 2, calls
                 assert calls[0][0] == EXTERNAL_URL, calls
                 assert calls[0][1] == {"ref_no": "REF-1", "status": "OPEN"}, calls
+                # The cron job's own API key belongs to the internal target and
+                # must not be forwarded to the external API.
+                assert "x-api-key" not in calls[0][2], calls[0][2]
 
-                # The internal API receives the external payload unchanged.
+                # The internal API receives the external payload unchanged,
+                # together with the cron job's configured credential.
                 assert calls[1][0] == INTERNAL_URL, calls
                 assert calls[1][1] == {"ref_no": "EXT-9", "status": "PAID"}, calls
+                assert calls[1][2].get("x-api-key") == "secret", calls[1][2]
 
                 assert run.success and run.status_code == 200, (run.status_code, run.error)
                 assert run.error is None

@@ -24,6 +24,7 @@ __all__ = [
     "auth_url_for",
     "drop_token_header",
     "invalidate_token",
+    "strip_auth_headers",
 ]
 
 _MAX_DEPTH = 6
@@ -373,12 +374,20 @@ async def apply_upstream_auth(
     header_params: dict[str, str],
     http_client: httpx.AsyncClient,
     upstream_url: str | None = None,
+    *,
+    allow_shared: bool = True,
 ) -> bool:
     """Attach credentials to ``header_params``.
 
     Returns ``True`` when a token issued by the auth service was injected (as
     opposed to a static token or a caller-supplied header). Callers use this to
     decide whether a 401 is worth retrying after dropping the cached token.
+
+    ``allow_shared`` controls whether the generic ``UPSTREAM_AUTH_URL`` token
+    may be used for a host that has no explicit auth URL of its own. Internal
+    delivery (the cron job's target) keeps the historical fallback; gateway
+    calls to arbitrary external APIs pass ``False`` so the IMIS bearer is not
+    leaked to a third party that never asked for it.
     """
     header_name = _header_name()
     for existing in header_params:
@@ -397,6 +406,12 @@ async def apply_upstream_auth(
         return False
 
     auth_url = auth_url_for(upstream_url)
+    if not auth_url and not allow_shared:
+        logger.debug(
+            "No auth endpoint configured for %s; not injecting shared token",
+            upstream_url,
+        )
+        return False
     try:
         token = await _cached_token(http_client, auth_url)
     except Exception as exc:  # defensive: never break the gateway on auth config
@@ -409,6 +424,33 @@ async def apply_upstream_auth(
     logger.debug("Injecting upstream auth header %r for upstream call", header_name)
     header_params[header_name] = _token_value(token)
     return True
+
+
+_AUTH_HEADER_NAMES = frozenset(
+    {
+        "authorization",
+        "proxy-authorization",
+        "x-api-key",
+        "x-api-token",
+        "api-key",
+        "apikey",
+        "x-auth-token",
+    }
+)
+
+
+def strip_auth_headers(header_params: dict[str, str]) -> None:
+    """Remove caller-supplied or injected credentials from a header mapping.
+
+    Used when an endpoint is marked ``require_authentication=N`` (or when a
+    cron job's own token must stay on the internal leg) so a bearer/API key
+    is never leaked to an API that did not ask for it.
+    """
+    configured = _header_name().lower()
+    for name in list(header_params):
+        lowered = str(name).lower()
+        if lowered in _AUTH_HEADER_NAMES or lowered == configured:
+            header_params.pop(name, None)
 
 
 def drop_token_header(header_params: dict[str, str]) -> None:
