@@ -190,6 +190,45 @@ class SchedulerIntegrationTests(unittest.TestCase):
             """
         )
 
+    def test_scheduler_payload_validation_accepts_relative_paths(self):
+        run_isolated(
+            """
+            from pydantic import ValidationError
+
+            created = ScheduledJobCreate(url="v1/audio/list", interval_seconds=60)
+            assert created.url == "/v1/audio/list", created.url
+
+            queried = ScheduledJobCreate(
+                url="/v1/audio/play?file=call-1.mp3", interval_seconds=60
+            )
+            assert queried.url == "/v1/audio/play?file=call-1.mp3", queried.url
+
+            for bad in ("", "?x=1", "/v1/audio/list#frag", "//host/path"):
+                try:
+                    ScheduledJobCreate(url=bad, interval_seconds=60)
+                except ValidationError:
+                    pass
+                else:
+                    raise AssertionError(f"invalid relative URL accepted: {bad!r}")
+            """
+        )
+
+    def test_mapping_job_payload_includes_query_string(self):
+        run_isolated(
+            """
+            from backend.services.mapping_job_service import _request_payload
+
+            assert _request_payload(None, "/v1/audio/play?file=a.mp3") == {
+                "file": "a.mp3"
+            }
+            # An explicit body value wins over the URL default.
+            assert _request_payload(
+                '{"file": "b.mp3"}', "/v1/audio/play?file=a.mp3"
+            ) == {"file": "b.mp3"}
+            assert _request_payload(None, None) == {}
+            """
+        )
+
     def test_run_timestamps_are_serialised_as_utc(self):
         run_isolated(
             """

@@ -9,6 +9,7 @@ import {
 	Refresh,
 	Search,
 	SearchOff,
+	Storage,
 	SyncAlt,
 	TableRows,
 } from "@mui/icons-material";
@@ -453,6 +454,15 @@ export default function EndpointsPage() {
 		() => localStorage.getItem(VIEW_STORAGE_KEY) || "table",
 	);
 	const [pendingDelete, setPendingDelete] = useState(null);
+	const [sftpTarget, setSftpTarget] = useState(null);
+	const [sftpForm, setSftpForm] = useState({
+		host: "",
+		port: "22",
+		username: "",
+		password: "",
+		privateKeyPath: "",
+		remotePath: "",
+	});
 
 	useEffect(() => {
 		localStorage.setItem(VIEW_STORAGE_KEY, view);
@@ -586,6 +596,55 @@ export default function EndpointsPage() {
 			},
 		},
 	);
+
+	const sftpMutation = useApiMutation(
+		({ id, values }) => endpointService.updateEndpoint(id, values),
+		{
+			onSuccess: () => {
+				queryClient.invalidateQueries({ queryKey: ["endpoints"] });
+				setSftpTarget(null);
+				showSnackbar("SFTP settings saved", "success");
+			},
+			onError: (mutationError) => {
+				const detail =
+					mutationError?.response?.data?.detail ||
+					mutationError?.message ||
+					"Could not save the SFTP settings.";
+				showSnackbar(
+					typeof detail === "string"
+						? detail
+						: "Could not save the SFTP settings.",
+					"error",
+				);
+			},
+		},
+	);
+
+	const openSftpSettings = (endpoint) => {
+		setSftpTarget(endpoint);
+		setSftpForm({
+			host: endpoint?.sftp_host || "",
+			port: String(endpoint?.sftp_port || 22),
+			username: endpoint?.sftp_username || "",
+			password: "",
+			privateKeyPath: endpoint?.sftp_private_key_path || "",
+			remotePath: endpoint?.sftp_remote_path || "",
+		});
+	};
+
+	const saveSftpSettings = () => {
+		if (!sftpTarget?.id) return;
+		const values = {
+			sftp_host: sftpForm.host.trim() || null,
+			sftp_port: Number(sftpForm.port) || 22,
+			sftp_username: sftpForm.username.trim() || null,
+			sftp_private_key_path: sftpForm.privateKeyPath.trim() || null,
+			sftp_remote_path: sftpForm.remotePath.trim() || null,
+		};
+		// An empty box leaves the stored secret untouched.
+		if (sftpForm.password) values.sftp_password = sftpForm.password;
+		sftpMutation.mutate({ id: sftpTarget.id, values });
+	};
 
 	const handleToggle = (endpoint) => {
 		if (!endpoint?.id) return;
@@ -921,11 +980,118 @@ export default function EndpointsPage() {
 								onEdit={(endpoint) => navigate(`/edit-mapping/${endpoint.id}`)}
 								onDelete={(endpoint) => setPendingDelete(endpoint)}
 								onToggle={handleToggle}
+								onSftp={openSftpSettings}
 							/>
 						</>
 					)}
 				</Box>
 			)}
+
+			<Dialog
+				open={Boolean(sftpTarget)}
+				onClose={
+					sftpMutation.isPending ? undefined : () => setSftpTarget(null)
+				}
+				maxWidth="sm"
+				fullWidth
+			>
+				<DialogTitle sx={{ display: "flex", alignItems: "center", gap: 1.5, pt: 2.5 }}>
+					<Box
+						sx={{
+							width: 40,
+							height: 40,
+							borderRadius: "12px",
+							display: "flex",
+							alignItems: "center",
+							justifyContent: "center",
+							color: "primary.main",
+							backgroundColor: alpha(theme.palette.primary.main, isDark ? 0.16 : 0.09),
+							border: `1px solid ${alpha(theme.palette.primary.main, 0.3)}`,
+							flexShrink: 0,
+						}}
+					>
+						<Storage sx={{ fontSize: 20 }} />
+					</Box>
+					<Box sx={{ minWidth: 0 }}>
+						<Typography component="span" variant="subtitle1" sx={{ display: "block", lineHeight: 1.3 }}>
+							SFTP settings
+						</Typography>
+						<Typography
+							className="mono-label"
+							component="span"
+							sx={{ display: "block", color: "text.disabled", fontSize: "0.55rem" }}
+						>
+							{sftpTarget?.endpoint_code || "endpoint"}
+						</Typography>
+					</Box>
+				</DialogTitle>
+				<DialogContent>
+					<Typography variant="body2" sx={{ color: "text.secondary", mb: 2 }}>
+						The gateway uses these credentials to list files or play a
+						recording for this endpoint. Leave the password blank to keep the
+						one already stored.
+					</Typography>
+					<Box sx={{ display: "grid", gridTemplateColumns: { xs: "1fr", sm: "2fr 1fr" }, gap: 1.5 }}>
+						<TextField
+							label="Host"
+							size="small"
+							required
+							value={sftpForm.host}
+							onChange={(event) => setSftpForm((prev) => ({ ...prev, host: event.target.value }))}
+						/>
+						<TextField
+							label="Port"
+							size="small"
+							type="number"
+							value={sftpForm.port}
+							onChange={(event) => setSftpForm((prev) => ({ ...prev, port: event.target.value }))}
+							inputProps={{ min: 1, max: 65535 }}
+						/>
+						<TextField
+							label="Username"
+							size="small"
+							value={sftpForm.username}
+							onChange={(event) => setSftpForm((prev) => ({ ...prev, username: event.target.value }))}
+						/>
+						<TextField
+							label="Password"
+							size="small"
+							type="password"
+							value={sftpForm.password}
+							onChange={(event) => setSftpForm((prev) => ({ ...prev, password: event.target.value }))}
+							placeholder="Unchanged"
+							autoComplete="new-password"
+						/>
+						<TextField
+							label="Private key path"
+							size="small"
+							value={sftpForm.privateKeyPath}
+							onChange={(event) => setSftpForm((prev) => ({ ...prev, privateKeyPath: event.target.value }))}
+							placeholder="Optional"
+						/>
+						<TextField
+							label="Remote path"
+							size="small"
+							value={sftpForm.remotePath}
+							onChange={(event) => setSftpForm((prev) => ({ ...prev, remotePath: event.target.value }))}
+							placeholder="/"
+						/>
+					</Box>
+				</DialogContent>
+				<DialogActions sx={{ px: 3, pb: 2.5 }}>
+					<Button color="inherit" onClick={() => setSftpTarget(null)} disabled={sftpMutation.isPending}>
+						Cancel
+					</Button>
+					<Button
+						variant="contained"
+						onClick={saveSftpSettings}
+						disabled={sftpMutation.isPending || !sftpForm.host.trim()}
+						startIcon={sftpMutation.isPending ? <CircularProgress size={16} thickness={5} color="inherit" /> : <Storage sx={{ fontSize: 18 }} />}
+					>
+						{sftpMutation.isPending ? "Saving…" : "Save"}
+					</Button>
+				</DialogActions>
+			</Dialog>
 
 			{}
 			<Dialog

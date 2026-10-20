@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from datetime import datetime, timezone
 from typing import Annotated
+from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
 
 from pydantic import (
@@ -46,12 +47,28 @@ _FORBIDDEN_HEADERS = frozenset(
 
 
 def _validate_url(value: str) -> str:
-    parsed = _HTTP_URL.validate_python(value)
-    if parsed.username is not None or parsed.password is not None:
-        raise ValueError("Scheduled job URL must not contain credentials")
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError("Scheduled job URL must not be empty")
+    if text.startswith("//"):
+        raise ValueError("Scheduled job URL must not be protocol-relative")
+    parsed = urlsplit(text)
+    if parsed.scheme:
+        validated = _HTTP_URL.validate_python(text)
+        if validated.username is not None or validated.password is not None:
+            raise ValueError("Scheduled job URL must not contain credentials")
+        if validated.fragment:
+            raise ValueError("Scheduled job URL must not contain a fragment")
+        return str(validated)
+    # Scheme-less paths are allowed: they identify a mapping-backed endpoint
+    # (for example ``/v1/audio/list``) or are expanded against MAPPER_BASE_URL
+    # when the job actually runs.
+    if not parsed.path:
+        raise ValueError("Scheduled job URL must include a path")
     if parsed.fragment:
         raise ValueError("Scheduled job URL must not contain a fragment")
-    return str(parsed)
+    path = parsed.path if parsed.path.startswith("/") else f"/{parsed.path}"
+    return urlunsplit(("", "", path, parsed.query, ""))
 
 
 def _validate_headers(value: object) -> dict[str, str] | None:

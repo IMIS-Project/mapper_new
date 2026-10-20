@@ -5,6 +5,7 @@ import {
 	EditOutlined,
 	MoreVert,
 	PowerSettingsNewOutlined,
+	Storage,
 } from "@mui/icons-material";
 import {
 	Box,
@@ -76,7 +77,7 @@ function formatDate(value) {
 	});
 }
 
-export default function EndpointCard({ endpoint, onEdit, onDelete, onToggle }) {
+export default function EndpointCard({ endpoint, onEdit, onDelete, onToggle, onSftp }) {
 	const theme = useTheme();
 	const isDark = theme.palette.mode === "dark";
 	const codeFont = theme.typography.fontFamilyCode;
@@ -310,6 +311,22 @@ export default function EndpointCard({ endpoint, onEdit, onDelete, onToggle }) {
 						{isActive ? "Deactivate" : "Activate"}
 					</ListItemText>
 				</MenuItem>
+				{endpoint?.protocol === "SFTP" || endpoint?.sftp_host ? (
+					<MenuItem
+						onClick={() => {
+							closeMenu();
+							onSftp?.(endpoint);
+						}}
+						sx={{ fontSize: "0.82rem" }}
+					>
+						<ListItemIcon>
+							<Storage fontSize="small" />
+						</ListItemIcon>
+						<ListItemText primaryTypographyProps={{ fontSize: "0.82rem" }}>
+							SFTP settings
+						</ListItemText>
+					</MenuItem>
+				) : null}
 				<MenuItem
 					onClick={() => {
 						closeMenu();

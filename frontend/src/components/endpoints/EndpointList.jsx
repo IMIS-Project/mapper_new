@@ -6,6 +6,7 @@ import {
 	DeleteOutline,
 	EditOutlined,
 	PowerSettingsNewOutlined,
+	Storage,
 	UnfoldMore,
 } from "@mui/icons-material";
 import {
@@ -123,6 +124,7 @@ export default function EndpointList({
 	onEdit,
 	onDelete,
 	onToggle,
+	onSftp,
 }) {
 	const theme = useTheme();
 	const isDark = theme.palette.mode === "dark";
@@ -161,6 +163,18 @@ export default function EndpointList({
 					<EditOutlined sx={{ fontSize: 17 }} />
 				</IconButton>
 			</Tooltip>
+			{endpoint?.protocol === "SFTP" || endpoint?.sftp_host ? (
+				<Tooltip title="SFTP settings" arrow>
+					<IconButton
+						size="small"
+						onClick={() => onSftp?.(endpoint)}
+						aria-label={`SFTP settings for ${endpoint?.endpoint_code || "endpoint"}`}
+						sx={{ color: "text.secondary", "&:hover": { color: "primary.main" } }}
+					>
+						<Storage sx={{ fontSize: 17 }} />
+					</IconButton>
+				</Tooltip>
+			) : null}
 			<Tooltip
 				title={
 					endpoint?.is_active ? "Deactivate endpoint" : "Activate endpoint"
@@ -256,6 +270,7 @@ export default function EndpointList({
 							onEdit={onEdit}
 							onDelete={onDelete}
 							onToggle={onToggle}
+							onSftp={onSftp}
 						/>
 					))}
 				</Box>

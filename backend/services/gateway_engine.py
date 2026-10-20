@@ -1,3 +1,4 @@
+import base64
 import logging
 import time
 from collections.abc import Mapping, Sequence
@@ -11,8 +12,10 @@ import httpx
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.core.config import settings
+from backend.core.crypto import decrypt_value_with_fallback
 from backend.models import ApiEndpoint, CallStatusEnum, ParameterMapping
-from backend.services import mock_service, parameter_service
+from backend.services import mock_service, parameter_service, sftp_service
 from backend.services.upstream_auth import apply_upstream_auth
 
 logger = logging.getLogger(__name__)
@@ -71,6 +74,31 @@ class EndpointSnapshot:
     rate_limit_rpm: int | None = None
     mock_enabled: bool = False
     updated_at: datetime | None = None
+    # SFTP-backed endpoints read their data straight from a remote server
+    # instead of calling an HTTP upstream.
+    protocol: str | None = None
+    sftp_host: str | None = None
+    sftp_port: int | None = None
+    sftp_username: str | None = None
+    sftp_password: str | None = None
+    sftp_private_key_path: str | None = None
+    sftp_remote_path: str | None = None
+
+    @property
+    def is_sftp(self) -> bool:
+        """True for an SFTP-backed *gateway route* (not a legacy file mapping).
+
+        The old file-mapping rows also carry ``protocol=SFTP``, but their
+        ``target_api_url`` is an absolute HTTP URL for another service. Only a
+        scheme-less target means this endpoint is itself the API the gateway
+        must serve from the remote server.
+        """
+        target = str(self.target_api_url or "").strip().lower()
+        return (
+            str(self.protocol or "").strip().upper() == "SFTP"
+            and bool(self.sftp_host)
+            and not target.startswith(("http://", "https://"))
+        )
 
     _mock_response: Any = field(default=None, repr=False)
 
@@ -137,6 +165,13 @@ _ENDPOINT_COLUMNS = (
     "method",
     "is_active",
     "updated_at",
+    "protocol",
+    "sftp_host",
+    "sftp_port",
+    "sftp_username",
+    "sftp_password",
+    "sftp_private_key_path",
+    "sftp_remote_path",
 )
 
 
@@ -157,6 +192,17 @@ def _endpoint_snapshot(row):
         rate_limit_rpm=None,
         mock_enabled=False,
         updated_at=values.get("updated_at"),
+        protocol=values.get("protocol"),
+        sftp_host=values.get("sftp_host"),
+        sftp_port=values.get("sftp_port"),
+        sftp_username=values.get("sftp_username"),
+        sftp_password=decrypt_value_with_fallback(
+            values.get("sftp_password"),
+            settings.ENCRYPTION_KEY,
+            settings.LEGACY_ENCRYPTION_KEY,
+        ),
+        sftp_private_key_path=values.get("sftp_private_key_path"),
+        sftp_remote_path=values.get("sftp_remote_path"),
         _mock_response=None,
     )
 
@@ -194,6 +240,30 @@ def _elapsed_ms(started: float) -> int:
 
 
 _LOG_ONLY_MESSAGE = "Log-only endpoint, no external call made"
+
+_SFTP_PLAY_LEAVES = frozenset({"play", "download", "file", "stream"})
+_SFTP_LIST_LEAVES = frozenset({"list", "files", "ls", "browse"})
+
+
+def _sftp_operation(endpoint: EndpointSnapshot, request_data: dict[str, Any]) -> str:
+    """Pick list vs. play from the route name, then from the request data."""
+    path = str(endpoint.target_api_url or endpoint.source_api_url or "").rstrip("/")
+    leaf = path.rsplit("/", 1)[-1].lower()
+    if leaf in _SFTP_PLAY_LEAVES:
+        return "play"
+    if leaf in _SFTP_LIST_LEAVES:
+        return "list"
+    if any(request_data.get(key) for key in ("file", "filename", "name")):
+        return "play"
+    return "list"
+
+
+def _sftp_filename(request_data: dict[str, Any]) -> str:
+    for key in ("file", "filename", "name", "path"):
+        value = request_data.get(key)
+        if value:
+            return str(value)
+    return ""
 
 
 def _log_only_result(
@@ -355,6 +425,18 @@ class GatewayEngine:
                 mappings = await self.load_mappings(endpoint)
             else:
                 await self._finish_read()
+
+            if endpoint.is_sftp:
+                return await self._execute_sftp(
+                    endpoint,
+                    dict(request_data or {}),
+                    headers,
+                    url,
+                    method,
+                    result,
+                    started,
+                )
+
             body_params, header_params, query_params = self._transform_parameters(
                 dict(request_data or {}), mappings, dict(headers or {})
             )
@@ -506,11 +588,13 @@ class GatewayEngine:
         self, target_url: str, target_method: str
     ) -> EndpointSnapshot | None:
         """Active endpoint whose ``target_api_url`` ends with ``target_url``."""
+        # Query strings address the endpoint's parameters, never its route.
+        route = target_url.split("?", 1)[0]
         statement = select(
             *(getattr(ApiEndpoint, name) for name in _ENDPOINT_COLUMNS)
         ).where(
             ApiEndpoint.is_active == True,
-            ApiEndpoint.target_api_url.like(f"%{target_url}"),
+            ApiEndpoint.target_api_url.like(f"%{route}"),
         )
         if target_method:
             statement = statement.where(func.upper(ApiEndpoint.method) == target_method)
@@ -623,6 +707,193 @@ class GatewayEngine:
             header_params["Content-Type"] = _DEFAULT_CONTENT_TYPE
 
         return body_params, header_params, query_params
+
+    async def _execute_sftp(
+        self,
+        endpoint: EndpointSnapshot,
+        request_data: dict[str, Any],
+        headers: dict[str, Any] | None,
+        url: str,
+        method: str,
+        result: dict[str, Any],
+        started: float,
+    ) -> ExecutionOutcome:
+        """Serve an SFTP-backed endpoint (list a directory or play a file)."""
+        operation = _sftp_operation(endpoint, request_data)
+        remote_path = endpoint.sftp_remote_path or "/"
+        target = f"sftp://{endpoint.sftp_host}:{endpoint.sftp_port or 22}{remote_path}"
+        outcome: dict[str, Any] = {
+            "failure_kind": None,
+            "upstream_attempted": True,
+            "success": False,
+            "data": None,
+            "status_code": None,
+            "response_time_ms": None,
+            "response_headers": None,
+            "external_request_url": target,
+            "external_request_method": "SFTP",
+            "external_request_headers": dict(headers or {}),
+            "external_request_body": {},
+            "external_query_params": dict(request_data),
+            "external_response_headers": None,
+            "external_status_code": None,
+            "external_response_time_ms": None,
+            "error": None,
+        }
+
+        sftp_started = time.perf_counter()
+        creds = sftp_service.endpoint_creds(endpoint)
+
+        async def _attempt_sftp() -> tuple[dict[str, Any], str, str, str]:
+            if operation == "play":
+                file = await sftp_service.read_file_with_creds(
+                    creds,
+                    remote_path,
+                    _sftp_filename(request_data),
+                    int(settings.SFTP_PLAY_MAX_BYTES),
+                )
+                data = {
+                    "operation": "play",
+                    "filename": file["filename"],
+                    "size": file["size"],
+                    "truncated": file["truncated"],
+                    "content_type": file["content_type"],
+                    "content_base64": base64.b64encode(file["content"]).decode(
+                        "ascii"
+                    ),
+                    "transport": "sftp",
+                }
+                return data, file["content_type"], target, "SFTP"
+
+            listing = await sftp_service.list_files_with_creds(creds, remote_path)
+            data = {"operation": "list", "transport": "sftp", **listing}
+            return data, "application/json", target, "SFTP"
+
+        async def _attempt_http() -> tuple[dict[str, Any], str, str, str]:
+            if operation == "play":
+                file = await sftp_service.read_file_via_http(
+                    creds,
+                    remote_path,
+                    _sftp_filename(request_data),
+                    int(settings.SFTP_PLAY_MAX_BYTES),
+                    client=self.http_client,
+                )
+                data = {
+                    "operation": "play",
+                    "filename": file["filename"],
+                    "size": file["size"],
+                    "truncated": file["truncated"],
+                    "content_type": file["content_type"],
+                    "content_base64": base64.b64encode(file["content"]).decode(
+                        "ascii"
+                    ),
+                    "transport": "http",
+                }
+                return data, file["content_type"], file["url"], "HTTP"
+
+            subpath = request_data.get("path")
+            listing = await sftp_service.list_files_via_http(
+                creds,
+                remote_path,
+                subpath=str(subpath) if subpath else None,
+                max_entries=int(settings.SFTP_MAX_ENTRIES),
+                depth=int(settings.SFTP_HTTP_LIST_DEPTH),
+                client=self.http_client,
+            )
+            data = {"operation": "list", **listing}
+            return data, "application/json", listing["base_url"], "HTTP"
+
+        # A stored opaque/blob secret can never authenticate over SFTP, so try
+        # the read-only HTTP index first to avoid burning the login timeout.
+        if not settings.SFTP_HTTP_FALLBACK:
+            attempts: list[tuple[str, Any]] = [("sftp", _attempt_sftp)]
+        elif sftp_service.password_looks_opaque(endpoint.sftp_password):
+            attempts = [("http", _attempt_http), ("sftp", _attempt_sftp)]
+        else:
+            attempts = [("sftp", _attempt_sftp), ("http", _attempt_http)]
+
+        errors: list[tuple[str, Exception]] = []
+        status = CallStatusEnum.FAILED.value
+        for transport, attempt in attempts:
+            try:
+                data, content_type, external_url, external_method = await attempt()
+            except ValueError as exc:
+                # Invalid client input (e.g. a traversing filename) is a 400;
+                # do not mask it with a transport fallback.
+                elapsed = _elapsed_ms(sftp_started)
+                outcome.update(
+                    {
+                        "status_code": 400,
+                        "response_time_ms": elapsed,
+                        "error": str(exc),
+                        "failure_kind": "configuration",
+                        "external_status_code": 400,
+                        "external_response_time_ms": elapsed,
+                    }
+                )
+                errors.append((transport, exc))
+                break
+            except Exception as exc:
+                errors.append((transport, exc))
+                logger.warning(
+                    "Gateway call %s: SFTP %s on %s via %s failed: %s",
+                    result["request_id"],
+                    operation,
+                    target,
+                    transport,
+                    exc,
+                )
+                continue
+
+            elapsed = _elapsed_ms(sftp_started)
+            outcome.update(
+                {
+                    "success": True,
+                    "data": data,
+                    "status_code": 200,
+                    "response_time_ms": elapsed,
+                    "response_headers": {"Content-Type": content_type},
+                    "external_request_url": external_url,
+                    "external_request_method": external_method,
+                    "external_response_headers": {"Content-Type": content_type},
+                    "external_status_code": 200,
+                    "external_response_time_ms": elapsed,
+                }
+            )
+            status = CallStatusEnum.SUCCESS.value
+            break
+        else:
+            elapsed = _elapsed_ms(sftp_started)
+            sftp_error = next(
+                (exc for kind, exc in errors if kind == "sftp"), None
+            )
+            http_error = next(
+                (exc for kind, exc in errors if kind == "http"), None
+            )
+            parts = []
+            if sftp_error is not None:
+                parts.append(f"SFTP error: {sftp_error}")
+            if http_error is not None:
+                parts.append(f"HTTP fallback error: {http_error}")
+            outcome.update(
+                {
+                    "status_code": 502,
+                    "response_time_ms": elapsed,
+                    "error": "; ".join(parts)
+                    or "No SFTP or HTTP transport succeeded",
+                    "failure_kind": "transport",
+                    "external_status_code": 502,
+                    "external_response_time_ms": elapsed,
+                }
+            )
+            status = CallStatusEnum.FAILED.value
+
+        failure_kind = outcome.pop("failure_kind")
+        upstream_attempted = bool(outcome.pop("upstream_attempted"))
+        result.update(outcome)
+        result["status"] = status
+        result["total_time_ms"] = _elapsed_ms(started)
+        return ExecutionOutcome(result, failure_kind, "live", upstream_attempted)
 
     async def _call_upstream(
         self,

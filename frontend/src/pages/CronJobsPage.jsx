@@ -21,6 +21,7 @@ import {
 	Button,
 	Chip,
 	CircularProgress,
+	Collapse,
 	Dialog,
 	DialogActions,
 	DialogContent,
@@ -469,9 +470,10 @@ const BODY_PRE_SX = (theme) => ({
 });
 
 /** One leg of a mapping run: which API was called and what came back. */
-function MappingLegCard({ step, title, leg, theme }) {
+function MappingLegCard({ step, title, leg, theme, defaultCollapsed = false }) {
 	const body = useMemo(() => formatLegBody(leg), [leg]);
 	const failed = Boolean(leg?.error) || !(leg?.status_code >= 200 && leg?.status_code < 300);
+	const [showBody, setShowBody] = useState(!defaultCollapsed);
 	return <Box sx={{ mb: 2 }}>
 		<Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.75 }} flexWrap="wrap">
 			<Chip size="small" label={step} color={failed ? "error" : "success"} sx={{ height: 20, fontSize: "0.6rem" }} />
@@ -483,7 +485,12 @@ function MappingLegCard({ step, title, leg, theme }) {
 		{leg?.error ? <Alert severity="error" sx={{ mb: 1, py: 0.25 }}>{leg.error}</Alert> : null}
 		<HeaderTable title="Request headers" headers={leg?.request_headers} empty="No request headers were captured." />
 		<HeaderTable title="Response headers" headers={leg?.response_headers} empty="No response headers were captured." />
-		{body ? <Box component="pre" sx={BODY_PRE_SX(theme)}>{body}</Box> : <Typography variant="body2" color="text.disabled">No payload was captured for this step.</Typography>}
+		{body ? <Box>
+			<Button size="small" onClick={() => setShowBody((value) => !value)} sx={{ mb: 0.75 }}>
+				{showBody ? "Hide payload" : `Show payload (${formatBytes(body.length)})`}
+			</Button>
+			<Collapse in={showBody}><Box component="pre" sx={BODY_PRE_SX(theme)}>{body}</Box></Collapse>
+		</Box> : <Typography variant="body2" color="text.disabled">No payload was captured for this step.</Typography>}
 	</Box>;
 }
 
@@ -492,11 +499,19 @@ function MappingLegCard({ step, title, leg, theme }) {
  * response is then forwarded to the internal API.
  */
 function MappingRunDetail({ mappingRun, theme }) {
+	const internal = mappingRun.internal;
+	const selfContained = Boolean(mappingRun.self_contained);
+	const internalFailed = Boolean(internal) && (Boolean(internal.error) || !(internal.status_code >= 200 && internal.status_code < 300));
 	return <Box sx={{ mt: 1.5 }}>
-		{mappingRun.mapping?.endpoint_code ? <Alert severity="info" sx={{ mb: 1.5, py: 0.25 }}>Mapped run for {mappingRun.mapping.endpoint_code} — the external API is called first and its response is forwarded verbatim to the internal API.</Alert> : null}
-		<MappingLegCard step="1" title="External API" leg={mappingRun.external} theme={theme} />
+		{mappingRun.mapping?.endpoint_code ? <Alert severity="info" sx={{ mb: 1.5, py: 0.25 }}>
+			{selfContained ? `Remote-file run for ${mappingRun.mapping.endpoint_code} — the data source is read directly over SFTP (or its read-only HTTP index), with no separate internal API call.` : `Mapped run for ${mappingRun.mapping.endpoint_code} — the external API is called first and its response is forwarded verbatim to the internal API.`}
+		</Alert> : null}
+		{internalFailed ? <Alert severity="error" sx={{ mb: 1.5, py: 0.25 }}>
+			The external data was fetched, but delivery to the internal API failed{internal.error ? ` (${internal.error})` : ""}. That payload is kept for diagnosis and collapsed below; the run is marked failed.
+		</Alert> : null}
+		<MappingLegCard step="1" title={selfContained ? "Remote file source" : "External API"} leg={mappingRun.external} theme={theme} defaultCollapsed={internalFailed} />
 		<Divider sx={{ my: 2 }} />
-		{mappingRun.internal ? <MappingLegCard step="2" title="Internal API" leg={mappingRun.internal} theme={theme} /> : <Alert severity="warning" sx={{ py: 0.25 }}>The internal API was not called because the external call did not succeed.</Alert>}
+		{internal ? <MappingLegCard step="2" title="Internal API" leg={internal} theme={theme} /> : selfContained ? <Alert severity="info" sx={{ py: 0.25 }}>Served directly from the remote file source; no internal API delivery was needed.</Alert> : <Alert severity="warning" sx={{ py: 0.25 }}>The internal API was not called because the external call did not succeed.</Alert>}
 	</Box>;
 }
 

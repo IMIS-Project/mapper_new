@@ -7,7 +7,10 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.attributes import set_committed_value
 
 from backend.core.config import settings
-from backend.core.crypto import decrypt_value, encrypt_value
+from backend.core.crypto import (
+    decrypt_value_with_fallback,
+    encrypt_value,
+)
 from backend.models import ApiEndpoint, ParameterMapping
 
 __all__ = [
@@ -62,7 +65,13 @@ def _decrypt_sensitive(endpoint: ApiEndpoint) -> ApiEndpoint:
         value = getattr(endpoint, field)
         if value:
             set_committed_value(
-                endpoint, field, decrypt_value(value, settings.ENCRYPTION_KEY)
+                endpoint,
+                field,
+                decrypt_value_with_fallback(
+                    value,
+                    settings.ENCRYPTION_KEY,
+                    settings.LEGACY_ENCRYPTION_KEY,
+                ),
             )
     return endpoint
 

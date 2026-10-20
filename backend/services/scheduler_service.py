@@ -37,7 +37,11 @@ from backend.services.scheduler_security import (
     build_pinned_request,
     validate_destination_async,
 )
-from backend.services.upstream_auth import apply_upstream_auth
+from backend.services.upstream_auth import (
+    apply_upstream_auth,
+    drop_token_header,
+    invalidate_token,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -234,7 +238,9 @@ async def reconcile_jobs() -> None:
             for row in rows:
                 try:
                     if not await is_mapping_backed(row.url, row.method):
-                        await validate_destination_async(row.url)
+                        await validate_destination_async(
+                            mapping_job_service.resolve_internal_url(row.url)
+                        )
                     build_trigger(cron=row.cron, interval_seconds=row.interval_seconds)
                 except (UnsafeDestinationError, ValueError):
                     row.enabled = False
@@ -268,7 +274,9 @@ async def create_job(
     if int(count_result.scalar_one() or 0) >= settings.SCHEDULER_MAX_JOBS:
         raise SchedulerLimitError("Scheduled job limit reached")
     if not await is_mapping_backed(payload.url, payload.method):
-        await validate_destination_async(payload.url)
+        await validate_destination_async(
+            mapping_job_service.resolve_internal_url(payload.url)
+        )
     build_trigger(cron=payload.cron, interval_seconds=payload.interval_seconds)
     row = ScheduledJob(
         job_id=payload.job_id,
@@ -380,7 +388,9 @@ async def set_job_enabled(db: AsyncSession, job_id: str, enabled: bool) -> Sched
     )
     if enabled:
         if not await is_mapping_backed(row.url, row.method):
-            await validate_destination_async(row.url)
+            await validate_destination_async(
+                mapping_job_service.resolve_internal_url(row.url)
+            )
         _add_live_job(row)
     else:
         try:
@@ -524,6 +534,42 @@ async def _mirror_to_api_call_log(
         )
 
 
+async def _send_stream_request(
+    client: httpx.AsyncClient,
+    method: str,
+    request_url: str,
+    send_headers: dict[str, str],
+    extensions: dict | None,
+    request_kwargs: dict,
+) -> tuple[int | None, dict[str, str], str | None, bool, int]:
+    """Perform one streamed request and capture a bounded response."""
+    async with client.stream(
+        method,
+        request_url,
+        headers=send_headers,
+        extensions=extensions,
+        follow_redirects=False,
+        timeout=float(settings.SCHEDULER_REQUEST_TIMEOUT_SECONDS),
+        **request_kwargs,
+    ) as response:
+        status_code = response.status_code
+        response_headers = dict(response.headers)
+        limit = int(settings.SCHEDULER_MAX_RESPONSE_BODY_BYTES)
+        buffer = bytearray()
+        truncated = False
+        async for chunk in response.aiter_bytes():
+            remaining = limit - len(buffer)
+            if remaining <= 0:
+                truncated = True
+                break
+            buffer.extend(chunk[:remaining])
+            if len(chunk) > remaining:
+                truncated = True
+                break
+        body = _decode_body(bytes(buffer)) if buffer else None
+        return status_code, response_headers, body, truncated, len(buffer)
+
+
 async def execute_scheduled_job(job_id: str, url: str, method: str) -> ScheduledJobRun:
     global _http_client
     started = time.perf_counter()
@@ -579,9 +625,10 @@ async def execute_scheduled_job(job_id: str, url: str, method: str) -> Scheduled
                     len(response_body.encode("utf-8")) if response_body else 0
                 )
             else:
-                addresses = await validate_destination_async(url)
+                effective_url = mapping_job_service.resolve_internal_url(url)
+                addresses = await validate_destination_async(effective_url)
                 request_url, pinned_headers, extensions = build_pinned_request(
-                    url, addresses[0] if addresses else None
+                    effective_url, addresses[0] if addresses else None
                 )
                 send_headers = dict(pinned_headers)
                 send_headers.update(headers or {})
@@ -592,36 +639,52 @@ async def execute_scheduled_job(job_id: str, url: str, method: str) -> Scheduled
                 # Authenticate every outbound call: a static token when the
                 # host has one configured, otherwise a service-account bearer
                 # issued by the destination host's auth service.
-                await apply_upstream_auth(send_headers, client, url)
+                injected = await apply_upstream_auth(
+                    send_headers, client, effective_url
+                )
                 request_headers = dict(send_headers)
-                async with client.stream(
+                (
+                    status_code,
+                    response_headers,
+                    response_body,
+                    response_body_truncated,
+                    response_size,
+                ) = await _send_stream_request(
+                    client,
                     method,
                     request_url,
-                    headers=send_headers,
-                    extensions=extensions,
-                    follow_redirects=False,
-                    timeout=float(settings.SCHEDULER_REQUEST_TIMEOUT_SECONDS),
-                    **request_kwargs,
-                ) as response:
-                    status_code = response.status_code
-                    response_headers = dict(response.headers)
-                    limit = int(settings.SCHEDULER_MAX_RESPONSE_BODY_BYTES)
-                    buffer = bytearray()
-                    async for chunk in response.aiter_bytes():
-                        remaining = limit - len(buffer)
-                        if remaining <= 0:
-                            response_body_truncated = True
-                            break
-                        buffer.extend(chunk[:remaining])
-                        if len(chunk) > remaining:
-                            response_body_truncated = True
-                            break
-                    response_size = len(buffer)
-                    response_body = _decode_body(bytes(buffer)) if buffer else None
-                    if 300 <= status_code < 400:
-                        error = "Redirect responses are not followed"
-                    elif status_code >= 400:
-                        error = f"HTTP {status_code}"
+                    send_headers,
+                    extensions,
+                    request_kwargs,
+                )
+
+                # A target that rejects the bearer we just sent may be running
+                # an auth service whose advertised lifetime is longer than it
+                # actually accepts. Drop the cached token and retry once.
+                if status_code == 401 and injected:
+                    invalidate_token(effective_url)
+                    drop_token_header(send_headers)
+                    await apply_upstream_auth(send_headers, client, effective_url)
+                    request_headers = dict(send_headers)
+                    (
+                        status_code,
+                        response_headers,
+                        response_body,
+                        response_body_truncated,
+                        response_size,
+                    ) = await _send_stream_request(
+                        client,
+                        method,
+                        request_url,
+                        send_headers,
+                        extensions,
+                        request_kwargs,
+                    )
+
+                if 300 <= status_code < 400:
+                    error = "Redirect responses are not followed"
+                elif status_code >= 400:
+                    error = f"HTTP {status_code}"
     except Exception as exc:
         error = _safe_error(exc)
         logger.warning("Scheduled job %s failed: %s", job_id, error)

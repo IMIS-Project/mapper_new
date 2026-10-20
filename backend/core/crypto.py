@@ -31,6 +31,25 @@ def encrypt_value(value: str, key: str) -> str:
     return f"{nonce.hex()}:{ciphertext.hex()}"
 
 
+def decrypt_value_with_fallback(
+    encrypted: str | None, key: str, legacy_key: str | None = None
+) -> str | None:
+    """Decrypt with ``key``, then with ``legacy_key`` for shared credentials.
+
+    The legacy mapper writes the same ``nonce_hex:cipher_hex`` envelope with a
+    different key; values it stored in the shared ``api_endpoint`` table must
+    stay usable here. Plaintext values (no colon) pass through untouched.
+    """
+    if not encrypted or ":" not in str(encrypted):
+        return encrypted
+    plaintext = decrypt_value(encrypted, key)
+    if plaintext != encrypted:
+        return plaintext
+    if legacy_key:
+        return decrypt_value(encrypted, legacy_key)
+    return encrypted
+
+
 def decrypt_value(encrypted: str, key: str) -> str:
     """Decrypt a value produced by :func:`encrypt_value`."""
     try:

@@ -408,6 +408,47 @@ class MappingCronTests(unittest.TestCase):
             """
         )
 
+    def test_internal_401_is_retried_once_with_a_fresh_token(self):
+        run_isolated(
+            """
+            async def check():
+                await seed_mapping()
+                internal_calls = []
+
+                async def handler(request):
+                    if str(request.url).startswith(EXTERNAL_URL):
+                        return httpx.Response(200, content=b'{"ref_no": "EXT-9"}', request=request)
+                    internal_calls.append(request.headers.get("authorization"))
+                    if len(internal_calls) == 1:
+                        return httpx.Response(
+                            401,
+                            content=b'{"detail": "Unauthorized: Invalid or missing token"}',
+                            request=request,
+                        )
+                    return httpx.Response(200, content=b'{"ok": true}', request=request)
+
+                async def fake_auth(headers, client, url=None):
+                    headers["Authorization"] = "Bearer retry-me"
+                    return True
+
+                mapping_job_service.apply_upstream_auth = fake_auth
+                scheduler_service.apply_upstream_auth = fake_auth
+
+                await create_job()
+                async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+                    scheduler_service._http_client = client
+                    run = await scheduler_service.execute_scheduled_job(
+                        "mapped-job", INTERNAL_URL, "POST"
+                    )
+
+                assert internal_calls == ["Bearer retry-me", "Bearer retry-me"], internal_calls
+                assert run.success and run.status_code == 200, (run.status_code, run.error)
+                assert run.error is None
+
+            await check()
+            """
+        )
+
     def test_scheduled_run_is_mirrored_into_api_call_log(self):
         run_isolated(
             """

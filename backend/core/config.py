@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     )
 
     ENCRYPTION_KEY: str
+    # Key used by the legacy mapper for the credentials both apps share in
+    # ``api_endpoint``; only read when ENCRYPTION_KEY cannot decrypt a value.
+    LEGACY_ENCRYPTION_KEY: str | None = None
 
     SERVER_HOST: str = "0.0.0.0"
     SERVER_PORT: int = Field(default=2528, ge=1, le=65535)
@@ -178,7 +181,16 @@ class Settings(BaseSettings):
     SFTP_LOGIN_TIMEOUT_SECONDS: float = Field(default=10.0, gt=0)
     SFTP_MAX_ENTRIES: int = Field(default=5000, gt=0)
     SFTP_PREVIEW_MAX_BYTES: int = Field(default=1048576, gt=0)
+    SFTP_PLAY_MAX_BYTES: int = Field(default=20971520, gt=0)
     SFTP_MAX_CONCURRENT: int = Field(default=10, gt=0)
+
+    # Many recorder hosts expose the same SFTP directory over an Apache index
+    # (read-only). When the stored SFTP secret is unusable (or the SFTP login
+    # fails) the gateway can read list/play results over HTTP instead.
+    SFTP_HTTP_FALLBACK: bool = True
+    SFTP_HTTP_PORT: int = Field(default=80, ge=1, le=65535)
+    SFTP_HTTP_TIMEOUT_SECONDS: float = Field(default=10.0, gt=0)
+    SFTP_HTTP_LIST_DEPTH: int = Field(default=2, ge=1, le=5)
 
     WEBHOOK_DELIVERY_TIMEOUT_SECONDS: float = Field(default=5.0, gt=0)
 

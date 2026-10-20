@@ -27,6 +27,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import parse_qsl, urlsplit
 
 import httpx
 from sqlalchemy import func, select
@@ -37,7 +38,11 @@ from backend.core.redaction import mask_sensitive
 from backend.db.session import AsyncSessionLocal
 from backend.models import ApiEndpoint, ParameterMapping
 from backend.services.gateway_engine import EndpointSnapshot, GatewayEngine
-from backend.services.upstream_auth import apply_upstream_auth
+from backend.services.upstream_auth import (
+    apply_upstream_auth,
+    drop_token_header,
+    invalidate_token,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -158,20 +163,28 @@ def _stringify(headers: Any) -> dict[str, str]:
     return {str(name): str(value) for name, value in (headers or {}).items()}
 
 
-def _request_payload(body: str | None) -> dict[str, Any]:
+def _request_payload(body: str | None, url: str | None = None) -> dict[str, Any]:
     """Cron body -> the internal field values sent on to the external API.
 
     Keys are the mapping's *internal* field names, which is what
     :meth:`GatewayEngine._transform_parameters` reads; it renames them to the
-    external field names on the way out.
+    external field names on the way out. A query string on the job URL is
+    folded in too, so ``GET /v1/audio/play?file=x.mp3`` reaches an SFTP-backed
+    endpoint with its ``file`` parameter intact.
     """
-    if not body or not body.strip():
-        return {}
-    try:
-        parsed = json.loads(body)
-    except ValueError:
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
+    payload: dict[str, Any] = {}
+    if url:
+        payload.update(
+            dict(parse_qsl(urlsplit(url).query, keep_blank_values=True))
+        )
+    if body and body.strip():
+        try:
+            parsed = json.loads(body)
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, dict):
+            payload.update(parsed)
+    return payload
 
 
 async def _fetch_routes(db: AsyncSession) -> list[MappingRoute]:
@@ -275,14 +288,51 @@ async def _deliver_to_internal(
     # the gateway authenticates its upstream calls: a static token when the
     # host has one configured, otherwise a service-account bearer from the
     # central auth login. A header already supplied by the cron job wins.
-    await apply_upstream_auth(send_headers, http_client, url)
+    injected = await apply_upstream_auth(send_headers, http_client, url)
+    leg = await _attempt_internal(
+        url=url,
+        method=method,
+        content=content,
+        headers=send_headers,
+        http_client=http_client,
+        started=started,
+    )
 
+    # A 401 means the target rejected the bearer we just sent. Auth services
+    # can issue a token whose advertised lifetime is longer than the target
+    # accepts, so drop the cached token and retry once with a fresh login
+    # rather than waiting for the next schedule tick to fail the same way.
+    if leg.status_code == 401 and injected:
+        invalidate_token(url)
+        drop_token_header(send_headers)
+        await apply_upstream_auth(send_headers, http_client, url)
+        leg = await _attempt_internal(
+            url=url,
+            method=method,
+            content=content,
+            headers=send_headers,
+            http_client=http_client,
+            started=started,
+        )
+
+    return leg
+
+
+async def _attempt_internal(
+    *,
+    url: str,
+    method: str,
+    content: bytes | None,
+    headers: dict[str, str],
+    http_client: httpx.AsyncClient,
+    started: float,
+) -> MappingLeg:
     try:
         async with http_client.stream(
             method,
             url,
             content=content,
-            headers=send_headers or None,
+            headers=headers or None,
             follow_redirects=False,
             timeout=float(settings.SCHEDULER_REQUEST_TIMEOUT_SECONDS),
         ) as response:
@@ -306,7 +356,7 @@ async def _deliver_to_internal(
             url=url,
             method=method,
             duration_ms=_elapsed_ms(started),
-            request_headers=mask_sensitive(send_headers),
+            request_headers=mask_sensitive(headers),
             error="Internal delivery timed out",
         )
     except httpx.RequestError as exc:
@@ -314,7 +364,7 @@ async def _deliver_to_internal(
             url=url,
             method=method,
             duration_ms=_elapsed_ms(started),
-            request_headers=mask_sensitive(send_headers),
+            request_headers=mask_sensitive(headers),
             error=f"Internal delivery failed: {exc}",
         )
 
@@ -334,7 +384,7 @@ async def _deliver_to_internal(
         method=method,
         status_code=status_code,
         duration_ms=_elapsed_ms(started),
-        request_headers=mask_sensitive(send_headers),
+        request_headers=mask_sensitive(headers),
         response_headers=response_headers,
         body=body,
         error=error,
@@ -404,7 +454,7 @@ async def execute_mapping_job(
         mappings = await engine.load_mappings(endpoint)
         outcome = await engine.execute_resolved(
             endpoint,
-            _request_payload(body),
+            _request_payload(body, internal_url),
             dict(headers or {}),
             internal_url,
             method,
@@ -416,6 +466,16 @@ async def execute_mapping_job(
 
     result = outcome.to_result()
     external_ok = bool(result.get("success"))
+    external_body = result.get("data")
+    if isinstance(external_body, dict) and "content_base64" in external_body:
+        # A played recording is delivered to the caller, never stored in the
+        # run history; keep the metadata so the run detail stays readable.
+        external_body = {
+            key: value
+            for key, value in external_body.items()
+            if key != "content_base64"
+        }
+        external_body["audio_omitted"] = True
     external = MappingLeg(
         url=str(result.get("external_request_url") or endpoint.source_api_url or ""),
         method=str(
@@ -429,16 +489,22 @@ async def execute_mapping_job(
             _stringify(result.get("external_request_headers"))
         ),
         response_headers=_stringify(result.get("external_response_headers")),
-        body=result.get("data"),
+        body=external_body,
         error=result.get("error"),
     )
 
     target_url = str(endpoint.target_api_url or "").strip()
     delivery_url = resolve_internal_url(target_url)
     internal: MappingLeg | None = None
+    self_contained = bool(endpoint.is_sftp)
     if not external_ok:
         error = f"External API call failed: {external.error or 'unknown error'}"
         status_code = external.status_code
+    elif self_contained:
+        # SFTP endpoints are the API: the remote read is the response, so
+        # there is no second (internal) HTTP leg to call.
+        status_code = external.status_code
+        error = None
     elif not is_absolute_http_url(delivery_url):
         error = (
             "The internal API URL of this mapping is not an absolute HTTP(S) "
@@ -466,6 +532,7 @@ async def execute_mapping_job(
             "internal_url": target_url,
             "external_url": external.url,
         },
+        "self_contained": self_contained,
         "external": external.as_dict(),
         "internal": internal.as_dict() if internal is not None else None,
     }
@@ -477,10 +544,15 @@ async def execute_mapping_job(
         internal=internal,
         payload=envelope,
         status_code=status_code,
-        success=external_ok and internal is not None and internal.ok,
+        success=external_ok
+        and (self_contained or (internal is not None and internal.ok)),
         error=error,
-        request_headers=dict(internal.request_headers) if internal else {},
-        response_headers=dict(internal.response_headers) if internal else {},
+        request_headers=dict(
+            internal.request_headers if internal else external.request_headers
+        ),
+        response_headers=dict(
+            internal.response_headers if internal else external.response_headers
+        ),
         external_request_body=result.get("external_request_body"),
         external_query_params=result.get("external_query_params"),
     )

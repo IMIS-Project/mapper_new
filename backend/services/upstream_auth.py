@@ -19,7 +19,12 @@ from backend.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["apply_upstream_auth"]
+__all__ = [
+    "apply_upstream_auth",
+    "auth_url_for",
+    "drop_token_header",
+    "invalidate_token",
+]
 
 _MAX_DEPTH = 6
 _GCM_NONCE_SIZE = 12
@@ -352,16 +357,33 @@ def auth_url_for(url: str | None) -> str | None:
     return None
 
 
+def invalidate_token(upstream_url: str | None = None) -> None:
+    """Forget the cached token for a host so the next lookup logs in again.
+
+    Called when a target rejects a freshly injected token with 401. Some auth
+    services report a lifetime that is longer than the token they actually
+    accept, so expiry checks alone cannot catch a token that has gone stale.
+    """
+    url = auth_url_for(upstream_url) if upstream_url else settings.UPSTREAM_AUTH_URL
+    if url:
+        _CACHE.pop(url, None)
+
+
 async def apply_upstream_auth(
     header_params: dict[str, str],
     http_client: httpx.AsyncClient,
     upstream_url: str | None = None,
-) -> None:
+) -> bool:
+    """Attach credentials to ``header_params``.
 
+    Returns ``True`` when a token issued by the auth service was injected (as
+    opposed to a static token or a caller-supplied header). Callers use this to
+    decide whether a 401 is worth retrying after dropping the cached token.
+    """
     header_name = _header_name()
     for existing in header_params:
         if existing.lower() in {"authorization", "x-api-token", header_name.lower()}:
-            return
+            return False
 
     token = _static_token_for(upstream_url) if upstream_url else None
     if token:
@@ -369,20 +391,29 @@ async def apply_upstream_auth(
             "Injecting static API token header %r for %s", header_name, upstream_url
         )
         header_params[header_name] = _token_value(token)
-        return
+        return False
 
     if not _configured():
-        return
+        return False
 
     auth_url = auth_url_for(upstream_url)
     try:
         token = await _cached_token(http_client, auth_url)
     except Exception as exc:  # defensive: never break the gateway on auth config
         logger.exception("Upstream auth lookup failed: %s", exc)
-        return
+        return False
 
     if not token:
-        return
+        return False
 
     logger.debug("Injecting upstream auth header %r for upstream call", header_name)
     header_params[header_name] = _token_value(token)
+    return True
+
+
+def drop_token_header(header_params: dict[str, str]) -> None:
+    """Remove an auth header previously injected by :func:`apply_upstream_auth`."""
+    header_name = _header_name()
+    for name in list(header_params):
+        if name.lower() in {"authorization", "x-api-token", header_name.lower()}:
+            header_params.pop(name, None)

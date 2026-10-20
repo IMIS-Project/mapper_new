@@ -14,6 +14,7 @@ match and only otherwise-unhandled paths fall through to the gateway.
 
 from __future__ import annotations
 
+import base64
 import logging
 from typing import Any
 
@@ -92,10 +93,30 @@ async def gateway_proxy(
     engine = GatewayEngine(db, http_client, timeout=settings.API_TIMEOUT_SECONDS)
     result = await engine.process_request(None, request_data, headers, target_url, method)
 
+    # SFTP "play" returns raw audio; the base64 envelope is only a transport
+    # detail and must never be written to the audit log verbatim.
+    data = result.get("data")
+    audio: bytes | None = None
+    if (
+        isinstance(data, dict)
+        and data.get("operation") == "play"
+        and data.get("content_base64")
+    ):
+        try:
+            audio = base64.b64decode(data["content_base64"])
+        except Exception:
+            audio = None
+
     # Only matched endpoints produce an audit row — unresolved probes stay out
     # of api_call_log, exactly like the legacy engine's "log only if endpoint".
     if result.get("endpoint_id") is not None:
         log_data = dict(result)
+        if audio is not None and isinstance(data, dict):
+            log_data["data"] = {
+                key: value
+                for key, value in data.items()
+                if key != "content_base64"
+            }
         log_data["internal_request_body"] = request_data
         background_tasks.add_task(write_call_log, db, log_data)
 
@@ -110,6 +131,19 @@ async def gateway_proxy(
         status_code,
         result.get("endpoint_id"),
     )
+
+    if audio is not None:
+        media_type = str(data.get("content_type") or "application/octet-stream")
+        filename = (
+            str(data.get("filename") or "audio")
+            .replace('"', "_")
+            .replace("\r", "")
+            .replace("\n", "")
+        )
+        headers = {"Content-Disposition": f'inline; filename="{filename}"'}
+        if data.get("truncated"):
+            headers["X-Audio-Truncated"] = "true"
+        return Response(content=audio, media_type=media_type, headers=headers)
 
     if status_code == 204:
         return Response(status_code=204)
