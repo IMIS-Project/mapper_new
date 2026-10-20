@@ -261,7 +261,7 @@ async def _deliver_to_internal(
                 url=url,
                 method=method,
                 duration_ms=_elapsed_ms(started),
-                request_headers=send_headers,
+                request_headers=mask_sensitive(send_headers),
                 error=(
                     "The external payload exceeds the scheduler forwarding limit "
                     f"of {limit} bytes"
@@ -306,7 +306,7 @@ async def _deliver_to_internal(
             url=url,
             method=method,
             duration_ms=_elapsed_ms(started),
-            request_headers=send_headers,
+            request_headers=mask_sensitive(send_headers),
             error="Internal delivery timed out",
         )
     except httpx.RequestError as exc:
@@ -314,7 +314,7 @@ async def _deliver_to_internal(
             url=url,
             method=method,
             duration_ms=_elapsed_ms(started),
-            request_headers=send_headers,
+            request_headers=mask_sensitive(send_headers),
             error=f"Internal delivery failed: {exc}",
         )
 
@@ -334,7 +334,7 @@ async def _deliver_to_internal(
         method=method,
         status_code=status_code,
         duration_ms=_elapsed_ms(started),
-        request_headers=send_headers,
+        request_headers=mask_sensitive(send_headers),
         response_headers=response_headers,
         body=body,
         error=error,

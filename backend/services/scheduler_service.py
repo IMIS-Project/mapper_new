@@ -20,6 +20,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.core.config import settings
+from backend.core.redaction import mask_sensitive
 from backend.db.scheduler_session import (
     SCHEDULER_SYNC_DATABASE_URL,
     SchedulerSessionLocal,
@@ -36,6 +37,7 @@ from backend.services.scheduler_security import (
     build_pinned_request,
     validate_destination_async,
 )
+from backend.services.upstream_auth import apply_upstream_auth
 
 logger = logging.getLogger(__name__)
 
@@ -587,6 +589,10 @@ async def execute_scheduled_job(job_id: str, url: str, method: str) -> Scheduled
                 if body is not None:
                     request_kwargs["content"] = body.encode("utf-8")
                     send_headers.setdefault("content-type", guess_content_type(body))
+                # Authenticate every outbound call: a static token when the
+                # host has one configured, otherwise a service-account bearer
+                # issued by the destination host's auth service.
+                await apply_upstream_auth(send_headers, client, url)
                 request_headers = dict(send_headers)
                 async with client.stream(
                     method,
@@ -627,7 +633,7 @@ async def execute_scheduled_job(job_id: str, url: str, method: str) -> Scheduled
         job_id=job_id,
         url=url,
         method=method,
-        request_headers=dump_headers(request_headers),
+        request_headers=dump_headers(mask_sensitive(request_headers)),
         response_headers=dump_headers(response_headers),
         response_body=response_body,
         response_body_truncated=response_body_truncated,

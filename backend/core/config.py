@@ -17,6 +17,7 @@ _RAW_STRING_FIELDS = frozenset(
         "SCHEDULER_ALLOWED_HOSTS",
         "SCHEDULER_ALLOWED_CIDRS",
         "UPSTREAM_API_TOKENS",
+        "UPSTREAM_AUTH_HOSTS",
     }
 )
 
@@ -166,6 +167,10 @@ class Settings(BaseSettings):
     ]
     UPSTREAM_AUTH_MIN_TTL_SECONDS: int = 60
 
+    # Optional per-host login endpoints, for environments that run their own
+    # auth service (e.g. UAT). Accepts ``host=login_url[,host=login_url]``.
+    UPSTREAM_AUTH_HOSTS: dict[str, str] = Field(default_factory=dict)
+
     UPSTREAM_API_TOKENS: dict[str, str] = Field(default_factory=dict)
 
     SFTP_KNOWN_HOSTS_FILE: str | None = None
@@ -235,7 +240,7 @@ class Settings(BaseSettings):
             return [origin.strip() for origin in stripped.split(",") if origin.strip()]
         return value
 
-    @field_validator("UPSTREAM_API_TOKENS", mode="before")
+    @field_validator("UPSTREAM_API_TOKENS", "UPSTREAM_AUTH_HOSTS", mode="before")
     @classmethod
     def _parse_upstream_api_tokens(cls, value: Any) -> Any:
         """Accept a JSON object or ``host=token[,host=token]`` from the env."""

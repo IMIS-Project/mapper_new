@@ -214,9 +214,11 @@ def _encrypt_login_payload(payload: dict[str, str], url: str) -> dict[str, str] 
     return {field: base64.b64encode(combined).decode("ascii")}
 
 
-async def _login(client: httpx.AsyncClient) -> _CachedToken | None:
+async def _login(
+    client: httpx.AsyncClient, auth_url: str | None = None
+) -> _CachedToken | None:
 
-    url = settings.UPSTREAM_AUTH_URL
+    url = auth_url or settings.UPSTREAM_AUTH_URL
     payload = _login_payload()
     content_type = (settings.UPSTREAM_AUTH_LOGIN_CONTENT_TYPE or "json").strip().lower()
 
@@ -276,12 +278,14 @@ async def _login(client: httpx.AsyncClient) -> _CachedToken | None:
     return None
 
 
-async def _cached_token(client: httpx.AsyncClient) -> str | None:
+async def _cached_token(
+    client: httpx.AsyncClient, auth_url: str | None = None
+) -> str | None:
     """Return a valid cached token, refreshing it in place when necessary."""
     if not _configured():
         return None
 
-    url = settings.UPSTREAM_AUTH_URL
+    url = auth_url or settings.UPSTREAM_AUTH_URL
     lock = _LOCKS.setdefault(url, asyncio.Lock())
 
     async with lock:
@@ -290,7 +294,7 @@ async def _cached_token(client: httpx.AsyncClient) -> str | None:
             settings.UPSTREAM_AUTH_MIN_TTL_SECONDS
         ):
             return cached.token
-        fresh = await _login(client)
+        fresh = await _login(client, url)
         if fresh is None:
             return cached.token if cached is not None else None
         _CACHE[url] = fresh
@@ -322,6 +326,32 @@ def _static_token_for(url: str) -> str | None:
     return None
 
 
+def auth_url_for(url: str | None) -> str | None:
+    """Pick the login endpoint that issues tokens for ``url``'s host.
+
+    ``UPSTREAM_AUTH_HOSTS`` maps a host to its own login endpoint (for
+    environments that run a separate auth service). Failing that, the shared
+    ``UPSTREAM_AUTH_URL`` is used when it belongs to the same host.
+    """
+    if not url:
+        return None
+    host = (urlparse(url).hostname or "").lower()
+    if not host:
+        return None
+    for candidate, login_url in (settings.UPSTREAM_AUTH_HOSTS or {}).items():
+        name = str(candidate).lower().lstrip(".")
+        if name and (host == name or host.endswith("." + name)):
+            return login_url
+    configured = settings.UPSTREAM_AUTH_URL
+    if configured:
+        configured_host = (urlparse(configured).hostname or "").lower()
+        if configured_host and (
+            host == configured_host or host.endswith("." + configured_host)
+        ):
+            return configured
+    return None
+
+
 async def apply_upstream_auth(
     header_params: dict[str, str],
     http_client: httpx.AsyncClient,
@@ -344,8 +374,9 @@ async def apply_upstream_auth(
     if not _configured():
         return
 
+    auth_url = auth_url_for(upstream_url)
     try:
-        token = await _cached_token(http_client)
+        token = await _cached_token(http_client, auth_url)
     except Exception as exc:  # defensive: never break the gateway on auth config
         logger.exception("Upstream auth lookup failed: %s", exc)
         return
