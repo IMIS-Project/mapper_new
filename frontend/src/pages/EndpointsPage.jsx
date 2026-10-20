@@ -32,7 +32,6 @@ import {
 	TextField,
 	ToggleButton,
 	ToggleButtonGroup,
-	Tooltip,
 	Typography,
 } from "@mui/material";
 import { alpha, useTheme } from "@mui/material/styles";
@@ -436,7 +435,7 @@ export default function EndpointsPage() {
 	const queryClient = useQueryClient();
 	const { showSnackbar } = useSnackbar();
 
-	const { data, isLoading, isError, error, refetch, isFetching } = useApiQuery(
+	const { data, isLoading, isError, error, refetch } = useApiQuery(
 		["endpoints"],
 		endpointService.getEndpoints,
 	);
@@ -801,10 +800,6 @@ export default function EndpointsPage() {
 								border: "1px solid",
 								borderColor: "divider",
 								backgroundColor: alpha(theme.palette.background.paper, 0.86),
-								"@keyframes registrySpin": {
-									from: { transform: "rotate(0deg)" },
-									to: { transform: "rotate(360deg)" },
-								},
 							}}
 						>
 							<TextField
@@ -917,29 +912,6 @@ export default function EndpointsPage() {
 								</ToggleButton>
 							</ToggleButtonGroup>
 
-							<Tooltip title="Refresh registry" arrow>
-								<span>
-									<IconButton
-										onClick={() => refetch()}
-										disabled={isFetching}
-										aria-label="Refresh registry"
-										sx={{
-											color: "text.secondary",
-											border: "1px solid",
-											borderColor: "divider",
-										}}
-									>
-										<Refresh
-											sx={{
-												fontSize: 19,
-												animation: isFetching
-													? "registrySpin 0.9s linear infinite"
-													: "none",
-											}}
-										/>
-									</IconButton>
-								</span>
-							</Tooltip>
 						</Paper>
 					)}
 
