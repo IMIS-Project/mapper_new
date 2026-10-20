@@ -19,6 +19,7 @@ caller-supplied URL, so the proxy cannot be pointed at an arbitrary host.
 import logging
 import re
 import time
+from datetime import datetime
 from typing import Any
 from urllib.parse import quote, urlencode
 from uuid import uuid4
@@ -29,6 +30,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.deps import bearer_scheme, get_current_active_user, get_db
+from backend.core.clock import local_now
 from backend.core.config import settings
 from backend.core.redaction import mask_sensitive
 from backend.services.log_writer import write_call_log
@@ -496,6 +498,7 @@ async def bank_call(
     else:
         request_kwargs["json"] = payload.payload
 
+    called_at = local_now()
     started = time.perf_counter()
     try:
         response = await http_client.request(
@@ -529,6 +532,7 @@ async def bank_call(
                 error=None if ok else _describe(data),
                 elapsed_ms=elapsed_ms,
                 correlation_id=correlation_id,
+                called_at=called_at,
             ),
         )
 
@@ -555,6 +559,7 @@ async def bank_call(
                 )
             ),
             correlation_id=correlation_id,
+            called_at=called_at,
             token_flow=operation.get("tokenFlow"),
             token_source=(
                 "chained bank-auth token"
@@ -585,6 +590,7 @@ async def bank_call(
                 error=f"Timed out after {settings.BANK_API_TIMEOUT_SECONDS}s: {exc}",
                 elapsed_ms=elapsed_ms,
                 correlation_id=correlation_id,
+                called_at=called_at,
             ),
         )
         return BankCallResponse(
@@ -604,6 +610,7 @@ async def bank_call(
                 f"Timed out after {settings.BANK_API_TIMEOUT_SECONDS}s: {exc}",
             ),
             correlation_id=correlation_id,
+            called_at=called_at,
             token_flow=operation.get("tokenFlow"),
             request_headers=_mask_headers(headers),
             request_body=_mask_body(payload.payload) if method != "GET" else None,
@@ -628,6 +635,7 @@ async def bank_call(
                 error=f"Could not reach the integration service: {exc}",
                 elapsed_ms=elapsed_ms,
                 correlation_id=correlation_id,
+                called_at=called_at,
             ),
         )
         return BankCallResponse(
@@ -647,6 +655,7 @@ async def bank_call(
                 f"Could not reach the integration service: {exc}",
             ),
             correlation_id=correlation_id,
+            called_at=called_at,
             token_flow=operation.get("tokenFlow"),
             request_headers=_mask_headers(headers),
             request_body=_mask_body(payload.payload) if method != "GET" else None,
@@ -758,6 +767,7 @@ def _build_log_entry(
     error: str | None,
     elapsed_ms: int,
     correlation_id: str,
+    called_at: datetime,
 ) -> dict[str, Any]:
     """Shape a bank call like a gateway result so it lands in Call Logs.
 
@@ -767,6 +777,7 @@ def _build_log_entry(
     return {
         "request_id": correlation_id,
         "endpoint_id": None,
+        "created_at": called_at,
         "method": method,
         "path": operation["path"],
         "external_request_url": target_url,

@@ -334,11 +334,12 @@ class SchedulerIntegrationTests(unittest.TestCase):
             """
         )
 
-    def test_run_timestamps_are_serialised_as_utc(self):
+    def test_run_timestamps_are_serialised_as_system_local(self):
         run_isolated(
             """
             import json
             from datetime import datetime, timedelta, timezone
+            from backend.core.clock import local_zone
             from backend.schemas.scheduled_job import ScheduledJobRunSummary
 
             def summary(ran_at):
@@ -348,21 +349,19 @@ class SchedulerIntegrationTests(unittest.TestCase):
                     ran_at=ran_at,
                 )
 
-            # SQLite hands back naive datetimes; they must be labelled UTC so
-            # the browser does not read them as local time. Pydantic renders a
-            # UTC offset as the "Z" designator.
+            # SQLite hands back the naive system-local wall clock. The API adds
+            # the system offset so clients can both sort correctly and display
+            # the mapper host's local time.
             naive = datetime(2026, 9, 28, 7, 53, 19, 911501)
             emitted = json.loads(summary(naive).model_dump_json())["ran_at"]
-            assert emitted.endswith("Z"), emitted
             assert emitted.startswith("2026-09-28T07:53:19.911501"), emitted
-            assert summary(naive).ran_at.tzinfo is timezone.utc
+            assert summary(naive).ran_at == naive.replace(tzinfo=local_zone())
 
-            # An already-aware value is converted, not reinterpreted: 12:53
-            # at +05:00 is the same instant as 07:53 UTC.
+            # An already-aware value is converted to the system timezone, not
+            # reinterpreted as local.
             offset = datetime(2026, 9, 28, 12, 53, 19, tzinfo=timezone(timedelta(hours=5)))
             converted = summary(offset).ran_at
-            assert converted == datetime(2026, 9, 28, 7, 53, 19, tzinfo=timezone.utc)
-            assert converted.tzinfo is timezone.utc
+            assert converted == offset.astimezone(local_zone())
 
             # Seconds survive the round trip, so the UI can show them.
             assert ".911501" in emitted

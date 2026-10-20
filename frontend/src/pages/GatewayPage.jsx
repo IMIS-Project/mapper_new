@@ -16,15 +16,9 @@ import GatewayTester from "../components/gateway/GatewayTester";
 import ResponseViewer from "../components/gateway/ResponseViewer";
 import { useApiMutation } from "../hooks/useApi";
 import { mapAndCall } from "../services/gatewayService";
+import { formatClock } from "../services/localTime";
 
 const HISTORY_LIMIT = 8;
-
-function formatClock(timestamp) {
-	if (!timestamp) return "";
-	const date = timestamp instanceof Date ? timestamp : new Date(timestamp);
-	if (Number.isNaN(date.getTime())) return "";
-	return date.toLocaleTimeString([], { hour12: false });
-}
 
 function maskAuthorization(value) {
 	const text = String(value ?? "");
@@ -193,15 +187,19 @@ export default function GatewayPage() {
 
 	const handleSend = useCallback(
 		async (payload) => {
-			const stamp = new Date();
 			let response;
 			try {
 				response = await sendMutation.mutateAsync(payload);
 			} catch (error) {
 				response = buildErrorResponse(error);
 			}
+			// The backend returns the host's call time; fall back to the
+			// browser clock only when a transport error produced no response.
+			const stamp = response?.called_at || new Date();
 			const call = {
-				id: stamp.getTime(),
+				id: response?.called_at
+					? Date.parse(response.called_at) || Date.now()
+					: stamp.getTime(),
 				request: payload,
 				response,
 				timestamp: stamp,

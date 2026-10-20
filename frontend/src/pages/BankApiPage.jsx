@@ -9,6 +9,7 @@ import BankCallViewer from "../components/bank/BankCallViewer";
 import BankOperationForm from "../components/bank/BankOperationForm";
 import { TOKEN_FLOW_LABELS } from "../components/bank/bankConstants";
 import { useApiMutation, useApiQuery } from "../hooks/useApi";
+import { formatClock } from "../services/localTime";
 import {
 	callBankOperation,
 	extractBankToken,
@@ -18,13 +19,6 @@ import {
 } from "../services/bankService";
 
 const HISTORY_LIMIT = 8;
-
-function formatClock(timestamp) {
-	if (!timestamp) return "";
-	const date = timestamp instanceof Date ? timestamp : new Date(timestamp);
-	if (Number.isNaN(date.getTime())) return "";
-	return date.toLocaleTimeString([], { hour12: false });
-}
 
 function maskToken(value) {
 	const text = String(value ?? "");
@@ -315,9 +309,14 @@ export default function BankApiPage() {
 				response = toErrorResult(error);
 			}
 
-			const stamp = new Date();
+			// Prefer the mapper host's call time so the Recent calls clock and
+			// the Call Logs row show the same local wall clock, regardless of
+			// the viewer's browser timezone.
+			const stamp = response?.called_at || new Date();
 			const call = {
-				id: stamp.getTime(),
+				id: response?.called_at
+					? Date.parse(response.called_at) || Date.now()
+					: stamp.getTime(),
 				operationId: op.id,
 				operationLabel: op.label,
 				operation: op,

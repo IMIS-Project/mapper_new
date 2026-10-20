@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
 from typing import Annotated
 from urllib.parse import urlsplit, urlunsplit
 from uuid import uuid4
@@ -20,6 +19,7 @@ from pydantic import (
 )
 
 from backend.core.config import settings
+from backend.schemas.common import LocalDateTime
 
 _HTTP_URL = TypeAdapter(HttpUrl)
 _METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
@@ -119,16 +119,6 @@ ScheduledJobHeaders = Annotated[
 ScheduledJobBody = Annotated[str | None, AfterValidator(_validate_body)]
 
 
-def _as_utc(value: datetime) -> datetime:
-
-    if value.tzinfo is None:
-        return value.replace(tzinfo=timezone.utc)
-    return value.astimezone(timezone.utc)
-
-
-UtcDateTime = Annotated[datetime, AfterValidator(_as_utc)]
-
-
 class ScheduledJobCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -199,10 +189,10 @@ class ScheduledJobResponse(BaseModel):
     interval_seconds: int | None
     enabled: bool
     created_by: int | None
-    created_at: UtcDateTime
-    updated_at: UtcDateTime
-    next_run_time: UtcDateTime | None = None
-    last_run_at: UtcDateTime | None = None
+    created_at: LocalDateTime
+    updated_at: LocalDateTime
+    next_run_time: LocalDateTime | None = None
+    last_run_at: LocalDateTime | None = None
     last_success: bool | None = None
     mapping: ScheduledJobMapping | None = None
 
@@ -220,7 +210,7 @@ class ScheduledJobRunSummary(BaseModel):
     success: bool
     duration_ms: int
     error: str | None
-    ran_at: UtcDateTime
+    ran_at: LocalDateTime
     response_size: int | None = None
     has_response_body: bool = False
 

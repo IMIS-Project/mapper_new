@@ -2,6 +2,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from backend.schemas.common import LocalDateTimeOptional
+
 
 class MapAndCallRequest(BaseModel):
     targetUrl: str
@@ -16,6 +18,7 @@ class MapAndCallResponse(BaseModel):
     data: Any | None = None
     status_code: int | None = None
     response_time_ms: int | None = None
+    called_at: LocalDateTimeOptional = None
     request_headers: dict[str, Any] | None = None
     response_headers: dict[str, Any] | None = None
     external_request_headers: dict[str, Any] | None = None

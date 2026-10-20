@@ -29,6 +29,7 @@ import { useMemo, useState } from "react";
 import MethodChip from "../common/MethodChip";
 import { STATUS_TEXT, statusTone } from "../common/httpStatus";
 import StatusChip from "../common/StatusChip";
+import { formatClock } from "../../services/localTime";
 import HeadersTable from "./HeadersTable";
 
 function toPrettyJson(value) {
@@ -54,13 +55,6 @@ function countEntries(headers) {
 	if (Array.isArray(headers)) return headers.length;
 	if (typeof headers === "object") return Object.keys(headers).length;
 	return 0;
-}
-
-function formatClock(timestamp) {
-	if (!timestamp) return "";
-	const date = timestamp instanceof Date ? timestamp : new Date(timestamp);
-	if (Number.isNaN(date.getTime())) return "";
-	return date.toLocaleTimeString([], { hour12: false });
 }
 
 async function copyText(text) {

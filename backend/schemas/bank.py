@@ -2,6 +2,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from backend.schemas.common import LocalDateTimeOptional
+
 
 class BankCallRequest(BaseModel):
     """A single call against one allow-listed bank operation."""
@@ -37,6 +39,8 @@ class BankCallResponse(BaseModel):
     targetMethod: str | None = None
     status_code: int | None = None
     response_time_ms: int | None = None
+    # Wall-clock time on the mapper host when the call was started.
+    called_at: LocalDateTimeOptional = None
     data: Any | None = None
     error: str | None = None
     # Where the failure came from: this service ("mapper") or the integration

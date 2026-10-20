@@ -1,8 +1,27 @@
-"""Shared response envelopes used across the API."""
+"""Shared response envelopes and value types used across the API."""
 
-from typing import Any
+from datetime import datetime
+from typing import Annotated, Any
 
-from pydantic import BaseModel, Field
+from pydantic import AfterValidator, BaseModel, Field
+
+from backend.core.clock import as_local
+
+
+def _as_local(value: datetime) -> datetime:
+    localized = as_local(value)
+    return localized if localized is not None else value
+
+
+def _as_optional_local(value: datetime | None) -> datetime | None:
+    return as_local(value)
+
+
+# Datetimes leave the API with the server's local offset attached.  The
+# console can therefore sort them correctly while still showing the server's
+# wall clock instead of the viewer's browser timezone.
+LocalDateTime = Annotated[datetime, AfterValidator(_as_local)]
+LocalDateTimeOptional = Annotated[datetime | None, AfterValidator(_as_optional_local)]
 
 
 class SuccessResponse(BaseModel):

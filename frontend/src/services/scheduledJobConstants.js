@@ -1,61 +1,9 @@
-const toDate = (value) => {
-	if (!value) return null;
-	const date = value instanceof Date ? value : new Date(value);
-	return Number.isNaN(date.getTime()) ? null : date;
-};
-
-export const formatDate = (value) => {
-	const date = toDate(value);
-	if (!date) return value ? String(value) : "—";
-	return date.toLocaleString([], {
-		year: "numeric",
-		month: "short",
-		day: "2-digit",
-		hour: "2-digit",
-		minute: "2-digit",
-	});
-};
-
-/**
- * Full timestamp down to the second, for run history where the exact
- * execution time is the point.
- */
-export const formatExactTime = (value) => {
-	const date = toDate(value);
-	if (!date) return value ? String(value) : "—";
-	return date.toLocaleString([], {
-		year: "numeric",
-		month: "short",
-		day: "2-digit",
-		hour: "2-digit",
-		minute: "2-digit",
-		second: "2-digit",
-		hour12: false,
-	});
-};
-
-/** Millisecond precision plus an explicit UTC marker, for the detail view. */
-export const formatPreciseTime = (value) => {
-	const date = toDate(value);
-	if (!date) return value ? String(value) : "—";
-	const iso = date.toISOString();
-	return `${iso.slice(0, 10)} ${iso.slice(11, 19)}.${iso.slice(20, 23)} UTC`;
-};
-
-/** Coarse "how long ago" label, e.g. "just now", "12m ago", "3d ago". */
-export const formatRelative = (value) => {
-	const date = toDate(value);
-	if (!date) return "—";
-	const seconds = Math.max(0, Math.floor((Date.now() - date.getTime()) / 1000));
-	if (seconds < 45) return "just now";
-	const minutes = Math.floor(seconds / 60);
-	if (minutes < 60) return `${minutes}m ago`;
-	const hours = Math.floor(minutes / 60);
-	if (hours < 24) return `${hours}h ago`;
-	const days = Math.floor(hours / 24);
-	if (days < 30) return `${days}d ago`;
-	return date.toLocaleDateString();
-};
+export {
+	formatDate,
+	formatExactTime,
+	formatPreciseTime,
+	formatRelative,
+} from "./localTime";
 
 export const formatDuration = (value) => {
 	if (value === null || value === undefined) return "—";

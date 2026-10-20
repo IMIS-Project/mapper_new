@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import Any
 
 import httpx
@@ -19,6 +19,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.core.clock import local_now
 from backend.core.config import settings
 from backend.core.redaction import mask_sensitive
 from backend.db.scheduler_session import (
@@ -147,7 +148,7 @@ def _skipped_run(
         success=False,
         duration_ms=max(0, int((time.perf_counter() - started) * 1000)),
         error=reason,
-        ran_at=datetime.now(timezone.utc),
+        ran_at=local_now(),
     )
 
 
@@ -431,7 +432,7 @@ async def set_job_enabled(db: AsyncSession, job_id: str, enabled: bool) -> Sched
         except (JobLookupError, SchedulerNotRunningError):
             pass
     row.enabled = enabled
-    row.updated_at = datetime.now(timezone.utc)
+    row.updated_at = local_now()
     try:
         await db.commit()
         await db.refresh(row)
@@ -453,7 +454,7 @@ async def _persist_run(run: ScheduledJobRun) -> None:
         try:
             db.add(run)
             await db.flush()
-            cutoff = datetime.now(timezone.utc) - timedelta(
+            cutoff = local_now() - timedelta(
                 days=settings.SCHEDULER_RUN_RETENTION_DAYS
             )
             await db.execute(
@@ -503,6 +504,7 @@ def _api_call_log_data(
         internal = mapping.internal
         return {
             "endpoint_id": mapping.endpoint_id,
+            "created_at": run.ran_at,
             "method": run.method,
             "path": run.url,
             # Internal leg: the API the cron job delivers the payload to.
@@ -531,6 +533,7 @@ def _api_call_log_data(
     job_body = _parsed_body(job.body) if job is not None else None
     return {
         "endpoint_id": None,
+        "created_at": run.ran_at,
         "method": run.method,
         "path": run.url,
         "request_headers": load_headers(run.request_headers) or {},
@@ -751,7 +754,7 @@ async def execute_scheduled_job(job_id: str, url: str, method: str) -> Scheduled
         success=status_code is not None and 200 <= status_code < 300 and error is None,
         duration_ms=max(0, int((time.perf_counter() - started) * 1000)),
         error=error,
-        ran_at=datetime.now(timezone.utc),
+        ran_at=local_now(),
     )
     await _persist_run(run)
     await _mirror_to_api_call_log(row, run, mapping)

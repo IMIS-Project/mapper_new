@@ -19,6 +19,7 @@ import { alpha, useTheme } from "@mui/material/styles";
 import { Fragment, useMemo, useState } from "react";
 
 import { useSnackbar } from "../../context/SnackbarContext";
+import { formatLogTimestamp } from "../../services/localTime";
 import MethodChip from "../common/MethodChip";
 import StatusChip from "../common/StatusChip";
 import LogDetail from "./LogDetail";
@@ -43,17 +44,6 @@ async function copyText(text) {
 	} catch {
 		return false;
 	}
-}
-
-function formatTimestamp(value) {
-	if (!value) return { date: "—", time: "" };
-	const date = new Date(value);
-	if (Number.isNaN(date.getTime())) return { date: String(value), time: "" };
-	const pad = (n) => String(n).padStart(2, "0");
-	return {
-		date: `${pad(date.getDate())} ${date.toLocaleString("en-US", { month: "short" })} ${date.getFullYear()}`,
-		time: `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`,
-	};
 }
 
 const shortId = (value) => {
@@ -374,7 +364,7 @@ export default function LogsTable({
 					{!loading &&
 						rows.map((row) => {
 							const expanded = expandedId === row.id;
-							const stamp = formatTimestamp(row.created_at);
+							const stamp = formatLogTimestamp(row.created_at);
 							const railColor = rowRailColor(row, theme);
 
 							return (

@@ -28,6 +28,7 @@ import { alpha, useTheme } from "@mui/material/styles";
 import { useMemo } from "react";
 import { useSnackbar } from "../../context/SnackbarContext";
 import { useApiQuery } from "../../hooks/useApi";
+import { formatLogDateTime } from "../../services/localTime";
 import logService from "../../services/logService";
 import MethodChip from "../common/MethodChip";
 import StatusChip from "../common/StatusChip";
@@ -90,16 +91,6 @@ function toEntries(map) {
 		else display = String(value);
 		return [name, display];
 	});
-}
-
-function formatTimestamp(value) {
-	if (!value) return "—";
-	const date = new Date(value);
-	if (Number.isNaN(date.getTime())) return String(value);
-	const pad = (n) => String(n).padStart(2, "0");
-	return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(
-		date.getHours(),
-	)}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
 }
 
 function formatMs(value) {
@@ -696,7 +687,7 @@ export default function LogDetail({ logId }) {
 					</DetailField>
 
 					<DetailField label="Timestamp" mono>
-						{formatTimestamp(detail.created_at)}
+						{formatLogDateTime(detail.created_at)}
 					</DetailField>
 
 					<DetailField label="Total Time">

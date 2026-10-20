@@ -23,6 +23,7 @@ from fastapi.responses import JSONResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.deps import get_db
+from backend.core.clock import local_now
 from backend.core.config import settings
 from backend.services.gateway_engine import GatewayEngine
 from backend.services.http_client import get_http_client
@@ -118,6 +119,7 @@ async def gateway_proxy(
                 if key != "content_base64"
             }
         log_data["internal_request_body"] = request_data
+        log_data["created_at"] = local_now()
         background_tasks.add_task(write_call_log, db, log_data)
 
     status_code = result.get("status_code")

@@ -1,9 +1,8 @@
-from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from backend.schemas.common import PaginatedResponse
+from backend.schemas.common import LocalDateTimeOptional, PaginatedResponse
 
 
 def _coerce_status(value: Any) -> str | None:
@@ -29,7 +28,7 @@ class CallLogResponse(BaseModel):
     status: str | None = None
     response_time_ms: int | None = None
     error_message: str | None = None
-    created_at: datetime | None = None
+    created_at: LocalDateTimeOptional = None
 
     request_id: str | None = None
     method: str | None = None
@@ -81,7 +80,7 @@ class CallLogSummary(BaseModel):
 
     external_status_code: int | None = None
     total_time_ms: int | None = None
-    created_at: datetime | None = None
+    created_at: LocalDateTimeOptional = None
 
     internal_request_headers: dict[str, Any] | None = None
     internal_request_body: dict[str, Any] | None = None

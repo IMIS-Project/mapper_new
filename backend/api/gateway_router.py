@@ -6,6 +6,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.api.deps import get_current_active_user, get_db
+from backend.core.clock import local_now
 from backend.core.config import settings
 from backend.models import CallStatusEnum
 from backend.services.central_auth import CentralUser
@@ -88,6 +89,7 @@ async def map_and_call(
     _current_user: User = Depends(get_current_active_user),
 ) -> MapAndCallResponse:
 
+    called_at = local_now()
     engine = GatewayEngine(
         db,
         http_client,
@@ -177,6 +179,7 @@ async def map_and_call(
                 elif _tripable(result):
                     await circuit_breaker.record_failure(endpoint.id)
 
+    result["called_at"] = called_at
     log_data = dict(result)
     log_data["internal_request_body"] = payload.requestData
 

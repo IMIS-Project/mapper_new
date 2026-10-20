@@ -29,6 +29,7 @@ import MethodChip from "../common/MethodChip";
 import StatusChip from "../common/StatusChip";
 import { statusLabel, statusTone } from "../common/httpStatus";
 import HeadersTable from "../gateway/HeadersTable";
+import { formatClock } from "../../services/localTime";
 import { TOKEN_FLOW_LABELS, maskSecrets } from "./bankConstants";
 
 /**
@@ -96,13 +97,6 @@ function toPrettyJson(value) {
 	} catch {
 		return String(value);
 	}
-}
-
-function formatClock(timestamp) {
-	if (!timestamp) return "";
-	const date = timestamp instanceof Date ? timestamp : new Date(timestamp);
-	if (Number.isNaN(date.getTime())) return "";
-	return date.toLocaleTimeString([], { hour12: false });
 }
 
 async function copyText(text) {

@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from backend.core.clock import local_now
 from backend.db.schema_probe import probe as schema_probe
 from backend.models import ApiCallLog, CallStatusEnum
 
@@ -181,6 +182,14 @@ async def write_call_log(
 
         values = schema_probe.writable(
             {
+                # Record the call's wall-clock time explicitly.  Relying on the
+                # database default made the audit rows depend on the MySQL
+                # server's timezone and could drift from scheduler history.
+                "created_at": (
+                    log_data.get("created_at")
+                    or log_data.get("called_at")
+                    or local_now()
+                ),
                 "endpoint_id": log_data.get("endpoint_id"),
                 "source_request_headers": _headers(
                     log_data.get("request_headers")

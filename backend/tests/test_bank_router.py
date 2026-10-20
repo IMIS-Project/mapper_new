@@ -844,9 +844,10 @@ class CallLogTests(_BankCall, unittest.IsolatedAsyncioTestCase):
             error=None,
             elapsed_ms=12,
             correlation_id="cid",
+            called_at=bank_router.local_now(),
         )
         for key in (
-            "request_id", "method", "path", "external_request_url",
+            "request_id", "created_at", "method", "path", "external_request_url",
             "external_status_code", "request_headers", "response_headers",
             "internal_request_body", "data", "success", "error",
             "total_time_ms", "status_code",

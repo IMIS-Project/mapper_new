@@ -566,7 +566,7 @@ function RunDetailDialog({ runId, query, jobNames, onClose }) {
 					<Chip size="small" color={run.success ? "success" : "error"} icon={run.success ? <CheckCircle /> : <ErrorOutline />} label={run.status_code || "Error"} />
 					<Typography variant="body2" className="mono">{formatDuration(run.duration_ms)}</Typography>
 					<Typography variant="caption" color="text.secondary">{formatBytes(run.response_size)} response</Typography>
-					<Tooltip title={`UTC ${formatPreciseTime(run.ran_at)}`}><span><Typography variant="caption" color="text.secondary" className="mono">{formatRelative(run.ran_at)}</Typography></span></Tooltip>
+					<Tooltip title={`Local time · ${formatPreciseTime(run.ran_at)}`}><span><Typography variant="caption" color="text.secondary" className="mono">{formatRelative(run.ran_at)}</Typography></span></Tooltip>
 					{run.response_body_truncated ? <Chip size="small" color="warning" label="Body truncated" /> : null}
 				</Stack>
 				<Typography variant="body2" className="mono" sx={{ mb: 0.5, wordBreak: "break-all" }}>{run.method} {run.url}</Typography>
