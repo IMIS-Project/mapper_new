@@ -151,6 +151,10 @@ def run_isolated(body: str) -> None:
                 "JWT_SECRET": "cron-http-test",
                 "ENCRYPTION_KEY": "cron-http-test",
                 "AUTH_BASE_URL": "https://auth.test",
+                "AUDIT_MONGO_ENABLED": "false",
+                "AUDIT_MONGO_URI": "mongodb://audit-store.invalid:27017/",
+                "AUDIT_MONGO_DATABASE": "audit_test_db",
+                "AUDIT_MONGO_COLLECTION": "audit_test_collection",
                 "DATABASE_URL": "sqlite+aiosqlite:///:memory:",
                 "SCHEDULER_DATABASE_PATH": str(Path(directory) / "scheduler.db"),
                 # Empty allowlist and no private networks, so only the mapping
@@ -192,6 +196,46 @@ class MappingCronHttpTests(unittest.TestCase):
             assert len(parameters) == 1, parameters
             assert parameters[0]["source_parameter"] == "ref_no"
             assert parameters[0]["target_parameter"] == "reference"
+            """
+        )
+
+    def test_updating_an_endpoint_returns_its_parameters(self):
+        # Regression: PATCH/PUT/POST returned the endpoint after commit() with
+        # the ``parameters`` relationship unloaded, so FastAPI's response
+        # serialization lazy-loaded it in a sync context (MissingGreenlet → 500).
+        run_isolated(
+            """
+            endpoint_id = await seed()
+            http = client()
+
+            patched = http.patch(
+                f"/api/api-endpoints/{endpoint_id}",
+                json={"description": "renamed from the UI"},
+            )
+            assert patched.status_code == 200, patched.text
+            body = patched.json()
+            assert body["description"] == "renamed from the UI", body
+            parameters = body["parameters"]
+            assert len(parameters) == 1, parameters
+            assert parameters[0]["source_parameter"] == "ref_no", parameters
+            assert parameters[0]["target_parameter"] == "reference", parameters
+
+            toggled = http.put(f"/api/api-endpoints/{endpoint_id}/toggle")
+            assert toggled.status_code == 200, toggled.text
+            toggled_body = toggled.json()
+            assert toggled_body["is_active"] is False, toggled_body
+            assert len(toggled_body["parameters"]) == 1, toggled_body
+
+            created = http.post(
+                "/api/api-endpoints",
+                json={
+                    "source_api_url": "https://external.test/v2/invoices",
+                    "target_api_url": INTERNAL_URL,
+                    "method": "POST",
+                },
+            )
+            assert created.status_code == 201, created.text
+            assert created.json()["parameters"] == [], created.text
             """
         )
 

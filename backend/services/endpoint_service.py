@@ -85,6 +85,23 @@ async def _fetch_by_id(db: AsyncSession, endpoint_id: int | str) -> ApiEndpoint 
     return result.scalar_one_or_none()
 
 
+async def _reload_with_parameters(db: AsyncSession, endpoint: ApiEndpoint) -> ApiEndpoint:
+    """Re-fetch an endpoint with ``parameters`` eager-loaded after a commit.
+
+    ``commit()`` expires every loaded attribute, and ``refresh()`` only reloads
+    column values. Returning the instance to FastAPI without the relationship
+    loaded would make response serialization trigger a lazy SELECT in a sync
+    context (``MissingGreenlet`` → 500), so re-select with ``selectinload``.
+    """
+    result = await db.execute(
+        select(ApiEndpoint)
+        .options(selectinload(ApiEndpoint.parameters))
+        .where(ApiEndpoint.id == endpoint.id)
+    )
+    refreshed = result.scalar_one()
+    return _decrypt_sensitive(refreshed)
+
+
 async def list_endpoints(
     db: AsyncSession,
     skip: int = 0,
@@ -145,8 +162,7 @@ async def create_endpoint(db: AsyncSession, data: dict[str, Any]) -> ApiEndpoint
 
     endpoint = await create_endpoint_flush(db, data)
     await db.commit()
-    await db.refresh(endpoint)
-    return _decrypt_sensitive(endpoint)
+    return await _reload_with_parameters(db, endpoint)
 
 
 async def update_endpoint(
@@ -161,8 +177,7 @@ async def update_endpoint(
         setattr(endpoint, field, value)
 
     await db.commit()
-    await db.refresh(endpoint)
-    return _decrypt_sensitive(endpoint)
+    return await _reload_with_parameters(db, endpoint)
 
 
 async def delete_endpoint(
@@ -224,5 +239,4 @@ async def toggle_endpoint(
 
     endpoint.is_active = not endpoint.is_active
     await db.commit()
-    await db.refresh(endpoint)
-    return _decrypt_sensitive(endpoint)
+    return await _reload_with_parameters(db, endpoint)
