@@ -23,7 +23,6 @@ const GatewayPage = lazy(() => import("./pages/GatewayPage"));
 const BankApiPage = lazy(() => import("./pages/BankApiPage"));
 const LogsPage = lazy(() => import("./pages/LogsPage"));
 const CronJobsPage = lazy(() => import("./pages/CronJobsPage"));
-const SftpPage = lazy(() => import("./pages/SftpPage"));
 const ExportImportPage = lazy(() => import("./pages/ExportImportPage"));
 
 function RouteLoader() {
@@ -124,7 +123,6 @@ export default function App() {
 						<Route path="/bank-apis" element={<BankApiPage />} />
 							<Route path="/logs" element={<LogsPage />} />
 							<Route path="/scheduled-jobs" element={<CronJobsPage />} />
-							<Route path="/sftp" element={<SftpPage />} />
 							<Route path="/export-import" element={<ExportImportPage />} />
 						</Route>
 

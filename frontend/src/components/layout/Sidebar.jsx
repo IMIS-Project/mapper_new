@@ -9,7 +9,6 @@ import {
 	Logout,
 	Send as SendIcon,
 	Schedule,
-	Storage,
 } from "@mui/icons-material";
 import {
 	Avatar,
@@ -60,7 +59,6 @@ const NAV_ITEMS = [
 	},
 	{ label: "Call Logs", to: "/logs", icon: <ListAlt fontSize="small" /> },
 	{ label: "Cron Jobs", to: "/scheduled-jobs", icon: <Schedule fontSize="small" /> },
-	{ label: "SFTP Browser", to: "/sftp", icon: <Storage fontSize="small" /> },
 	{
 		label: "Export / Import",
 		to: "/export-import",
