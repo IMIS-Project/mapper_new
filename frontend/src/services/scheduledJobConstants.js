@@ -144,6 +144,12 @@ export const MAPPING_RUN_KIND = "api-mapping-cron-run";
 /** How a mapped parameter travels on the target request. */
 export const PARAM_LOCATIONS = ["BODY", "HEADER", "QUERY"];
 
+/** Legacy rows spell the query location "QUERYSTRING" (or "QUERY_STRING"). */
+const PARAM_LOCATION_ALIASES = {
+	QUERYSTRING: "QUERY",
+	QUERY_STRING: "QUERY",
+};
+
 /** Normalise the mapping's `method` to one the scheduler accepts. */
 export const MAPPING_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 
@@ -170,7 +176,8 @@ export const groupParametersByLocation = (parameters) => {
 	(parameters || []).forEach((parameter) => {
 		if (parameter?.is_active === false) return;
 		const raw = String(parameter?.parameter_type || "BODY").trim().toUpperCase();
-		const location = PARAM_LOCATIONS.includes(raw) ? raw : "BODY";
+		const normalized = PARAM_LOCATION_ALIASES[raw] || raw;
+		const location = PARAM_LOCATIONS.includes(normalized) ? normalized : "BODY";
 		groups[location].push(parameter);
 	});
 	return groups;

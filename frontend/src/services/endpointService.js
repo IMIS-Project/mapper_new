@@ -20,8 +20,12 @@ export const getParameters = async (endpointId) => {
  * writes to the mapping database, so this is a plain SELECT.
  */
 export const listMappings = async (search) => {
+	// React Query passes its query context to the query function. Only an
+	// explicit string is a real search term; never serialize that context into
+	// API query parameters.
+	const term = typeof search === "string" ? search.trim() : "";
 	const response = await api.get("/api-endpoints", {
-		params: { limit: 500, ...(search ? { search } : {}) },
+		params: { limit: 500, ...(term ? { search: term } : {}) },
 	});
 	return response.data;
 };

@@ -144,28 +144,11 @@ export default function CronJobsPage() {
 	};
 
 	/**
-	 * Register from an existing mapping: the internal URL, the method, the name
-	 * and the parameters are picked straight from the mapping rows. Reading
-	 * them is a SELECT — the mapping itself is never written to.
+	 * Fill the form from a mapping's parameter rows: the internal URL, method,
+	 * name, header placeholders and the JSON body skeleton. The rows are read
+	 * only — the mapping itself is never written to.
 	 */
-	const pickMapping = async (mapping) => {
-		if (!mapping) {
-			setSelectedMapping(null);
-			setMappingParameters([]);
-			setForm((previous) => ({ ...previous, mappingId: null }));
-			return;
-		}
-		setSelectedMapping(mapping);
-		let parameters = [];
-		try {
-			parameters = (await queryClient.fetchQuery({
-				queryKey: ["cron-job-mapping-parameters", mapping.id],
-				queryFn: () => endpointService.getParameters(mapping.id),
-			})) || [];
-		} catch (error) {
-			showSnackbar(readError(error), "error");
-		}
-		setMappingParameters(parameters);
+	const applyMapping = (mapping, parameters) => {
 		const groups = groupParametersByLocation(parameters);
 		const method = normalizeMappingMethod(mapping.method);
 		setForm((previous) => {
@@ -185,6 +168,36 @@ export default function CronJobsPage() {
 			}
 			return next;
 		});
+	};
+
+	const pickMapping = async (mapping) => {
+		if (!mapping) {
+			setSelectedMapping(null);
+			setMappingParameters([]);
+			setForm((previous) => ({ ...previous, mappingId: null }));
+			return;
+		}
+		setSelectedMapping(mapping);
+		// The endpoint list already eager-loads the parameter rows. Seed the
+		// URL, headers and body straight from them so the form fills as soon
+		// as a mapping is picked; only fall back to the dedicated endpoint
+		// when the list response did not include any parameters.
+		const included = Array.isArray(mapping.parameters)
+			? mapping.parameters.filter((parameter) => parameter?.is_active !== false)
+			: [];
+		setMappingParameters(included);
+		applyMapping(mapping, included);
+		if (included.length) return;
+		try {
+			const parameters = (await queryClient.fetchQuery({
+				queryKey: ["cron-job-mapping-parameters", mapping.id],
+				queryFn: () => endpointService.getParameters(mapping.id),
+			})) || [];
+			setMappingParameters(parameters);
+			applyMapping(mapping, parameters);
+		} catch (error) {
+			showSnackbar(readError(error), "error");
+		}
 	};
 
 	const createMutation = useApiMutation(scheduledJobService.createScheduledJob, {
