@@ -21,11 +21,15 @@ async def async_db():
         echo=False,
     )
     from backend.models.env_var import ApiEnvVariable
+    from backend.models.endpoint import ApiEndpoint
+    from backend.models.log import ApiCallLog
     tables = [
         Workflow.__table__,
         WorkflowStep.__table__,
         WorkflowRun.__table__,
         ApiEnvVariable.__table__,
+        ApiEndpoint.__table__,
+        ApiCallLog.__table__,
     ]
     async with engine.begin() as conn:
         await conn.run_sync(lambda sync_conn: Base.metadata.create_all(sync_conn, tables=tables))
@@ -218,4 +222,68 @@ async def test_sspa_resolve_workflow_execution(async_db: AsyncSession):
     assert decrypted_body["status"] == "resolved"
     assert decrypted_body["source_ticket_id"] == "IMIS-TICKET-2026-00123"
     assert decrypted_body["resolved_by_system"] == "IMIS"
+
+
+@pytest.mark.asyncio
+async def test_update_ticket_workflow_execution(async_db: AsyncSession):
+    await seed_default_workflows(async_db)
+
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    stmt = select(Workflow).options(selectinload(Workflow.steps)).where(Workflow.slug == "update-ticket")
+    wf = (await async_db.execute(stmt)).scalar_one()
+
+    assert wf.is_active is True
+    assert len(wf.steps) == 3
+
+    mock_http_client = MagicMock(spec=httpx.AsyncClient)
+    captured = []
+
+    async def mock_request(**kwargs):
+        captured.append(kwargs)
+        url = kwargs.get("url", "")
+        resp = MagicMock(spec=httpx.Response)
+        resp.status_code = 200
+        resp.headers = {"Content-Type": "application/json"}
+        if "auth/login" in url:
+            resp.json.return_value = {
+                "status": "success",
+                "data": {"access_token": "token-test-xyz"},
+            }
+        elif "complaint/update-status" in url:
+            resp.json.return_value = {
+                "status": "success",
+                "message": "Complaint status updated successfully",
+                "data": {
+                    "source_ticket_id": "IMIS-TICKET-2026-0090",
+                    "status": "resolved",
+                },
+            }
+        return resp
+
+    mock_http_client.request = AsyncMock(side_effect=mock_request)
+
+    payload = {
+        "default_payload": {
+            "source_ticket_id": "IMIS-TICKET-2026-0090",
+            "description": "Resolved by branch counter",
+        }
+    }
+
+    result = await run_workflow(
+        workflow=wf,
+        trigger_payload=payload,
+        db=async_db,
+        http_client=mock_http_client,
+    )
+
+    assert result["status"] == "SUCCESS"
+    assert len(captured) == 2
+    assert captured[0]["url"] == "https://devmis.sspa.gos.pk/api/v1/imis/auth/login"
+    assert captured[1]["url"] == "https://devmis.sspa.gos.pk/api/v1/imis/complaint/update-status"
+    assert captured[1]["headers"]["Authorization"] == "Bearer token-test-xyz"
+    assert captured[1]["json"]["source_ticket_id"] == "IMIS-TICKET-2026-0090"
+    assert captured[1]["json"]["status"] == "resolved"
+
 

@@ -125,12 +125,74 @@ WORKING_STEPS_CONFIG: list[dict[str, Any]] = [
 ]
 
 
+UPDATE_STEPS_CONFIG: list[dict[str, Any]] = [
+    {
+        "step_key": "step_1",
+        "step_type": "start_webhook",
+        "step_order": 1,
+        "config": {
+            "default_payload": {
+                "source_ticket_id": "IMIS-TICKET-2026-0090",
+                "status": "resolved",
+                "description": "Payment disbursed successfully at local branch counter.",
+                "resolved_by_system": "IMIS",
+                "resolved_at": "2026-10-21 16:30:00",
+            }
+        },
+    },
+    {
+        "step_key": "step_3",
+        "step_type": "http_request",
+        "step_order": 2,
+        "config": {
+            "method": "POST",
+            "url": "{{env.MIS_BASE_URL}}/api/v1/imis/auth/login",
+            "headers": {
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "x-api-key": "{{env.MIS_API_KEY}}",
+            },
+            "body": {
+                "email": "{{env.MIS_EMAIL}}",
+                "password": "{{env.MIS_PASSWORD}}",
+                "program_id": "{{env.MIS_PROGRAM_ID}}",
+            },
+        },
+    },
+    {
+        "step_key": "step_4",
+        "step_type": "http_request",
+        "step_order": 3,
+        "config": {
+            "method": "POST",
+            "url": "{{env.MIS_BASE_URL}}/api/v1/imis/complaint/update-status",
+            "headers": {
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "x-api-key": "{{env.MIS_API_KEY}}",
+                "Authorization": "Bearer {{nodes.step_3.data.access_token}}",
+            },
+            "body": {
+                "source_ticket_id": "{{trigger.default_payload.source_ticket_id}}",
+                "status": "resolved",
+                "description": "{{trigger.default_payload.description}}",
+                "resolved_by_system": "IMIS",
+                "resolved_at": "{{trigger.default_payload.resolved_at}}",
+            },
+        },
+    },
+]
+
+
 async def _upsert_working_workflow(
     db: AsyncSession,
     slug: str,
     name: str,
     description: str,
+    steps_config: list[dict[str, Any]] | None = None,
 ) -> None:
+    if steps_config is None:
+        steps_config = WORKING_STEPS_CONFIG
     stmt = select(Workflow).where(Workflow.slug == slug)
     res = await db.execute(stmt)
     wf = res.scalar_one_or_none()
@@ -146,7 +208,7 @@ async def _upsert_working_workflow(
         db.add(wf)
         await db.flush()
 
-        for s_def in WORKING_STEPS_CONFIG:
+        for s_def in steps_config:
             step = WorkflowStep(
                 workflow_id=wf.id,
                 step_key=s_def["step_key"],
@@ -161,7 +223,7 @@ async def _upsert_working_workflow(
         step_stmt = select(WorkflowStep).where(WorkflowStep.workflow_id == wf.id)
         existing_steps = (await db.execute(step_stmt)).scalars().all()
         if not existing_steps:
-            for s_def in WORKING_STEPS_CONFIG:
+            for s_def in steps_config:
                 step = WorkflowStep(
                     workflow_id=wf.id,
                     step_key=s_def["step_key"],
@@ -173,7 +235,7 @@ async def _upsert_working_workflow(
                 db.add(step)
         else:
             step_map = {s.step_key: s for s in existing_steps}
-            for s_def in WORKING_STEPS_CONFIG:
+            for s_def in steps_config:
                 k = s_def["step_key"]
                 if k in step_map:
                     step_map[k].step_type = s_def["step_type"]
@@ -434,30 +496,57 @@ async def seed_default_workflows(db: AsyncSession) -> None:
         slug="w",
         name="w1",
         description="workflow",
+        steps_config=WORKING_STEPS_CONFIG,
     )
     await _upsert_working_workflow(
         db,
         slug="create-ticket",
         name="Create Ticket",
         description="Create Ticket on MIS",
+        steps_config=WORKING_STEPS_CONFIG,
+    )
+    await _upsert_working_workflow(
+        db,
+        slug="update-ticket",
+        name="Update Ticket",
+        description="Update Complaint Status on MIS",
+        steps_config=UPDATE_STEPS_CONFIG,
+    )
+    await _upsert_working_workflow(
+        db,
+        slug="w-update",
+        name="w-update",
+        description="workflow - update ticket status",
+        steps_config=UPDATE_STEPS_CONFIG,
     )
 
-    await _ensure_workflow_endpoint(db, "w", "w1")
-    await _ensure_workflow_endpoint(db, "create-ticket", "Create Ticket")
-    await _backfill_existing_workflow_runs_to_logs(db)
+    await _ensure_workflow_endpoint(db, "w", "w1", "https://devmis.sspa.gos.pk/api/v1/imis/complaint/create")
+    await _ensure_workflow_endpoint(db, "create-ticket", "Create Ticket", "https://devmis.sspa.gos.pk/api/v1/imis/complaint/create")
+    await _ensure_workflow_endpoint(db, "update-ticket", "Update Ticket", "https://devmis.sspa.gos.pk/api/v1/imis/complaint/update-status")
+    await _ensure_workflow_endpoint(db, "w-update", "w-update", "https://devmis.sspa.gos.pk/api/v1/imis/complaint/update-status")
 
     await db.commit()
+
+    try:
+        await _backfill_existing_workflow_runs_to_logs(db)
+        await db.commit()
+    except Exception as exc:
+        logger.warning("Could not backfill workflow runs to logs: %s", exc)
+        try:
+            await db.rollback()
+        except Exception:
+            pass
 
 
 async def _ensure_workflow_endpoint(
     db: AsyncSession,
     slug: str,
     name: str,
+    target_url: str = "https://devmis.sspa.gos.pk/api/v1/imis/complaint/create",
 ) -> None:
     try:
         from backend.models.endpoint import ApiEndpoint
         from backend.models.enums import ContentTypeEnum
-        target_url = "https://devmis.sspa.gos.pk/api/v1/imis/complaint/create"
         endpoint_code = f"WF_{slug.upper().replace('-', '_')}"
         stmt = select(ApiEndpoint).where(ApiEndpoint.endpoint_code == endpoint_code)
         ep = (await db.execute(stmt)).scalar_one_or_none()
@@ -486,6 +575,7 @@ async def _ensure_workflow_endpoint(
         from sqlalchemy import update
         stmt_fix = (
             update(ApiEndpoint)
+            .where(ApiEndpoint.endpoint_code == endpoint_code)
             .where(ApiEndpoint.target_api_url.like("Workflow:%"))
             .values(target_api_url=target_url)
         )

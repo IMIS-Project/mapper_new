@@ -80,9 +80,9 @@ async def list_workflows(
     user: CentralUser = Depends(get_current_active_user),
 ):
     # Ensure default workflows and variables are seeded
-    count_stmt = select(func.count(Workflow.id))
-    total_wfs = (await db.execute(count_stmt)).scalar() or 0
-    if total_wfs == 0:
+    has_update_stmt = select(func.count(Workflow.id)).where(Workflow.slug == "update-ticket")
+    has_update = (await db.execute(has_update_stmt)).scalar() or 0
+    if has_update == 0:
         await seed_default_workflows(db)
 
     stmt = (
