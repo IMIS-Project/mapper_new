@@ -45,7 +45,12 @@ def resolve_single_reference(ref: str, context: dict[str, Any]) -> Any:
     elif ref.startswith("trigger."):
         path = ref[8:]
         trigger_payload = context.get("trigger", {})
-        return get_nested_value(trigger_payload, path)
+        val = get_nested_value(trigger_payload, path)
+        if val is None and path.startswith("default_payload."):
+            val = get_nested_value(trigger_payload, path[16:])
+        elif val is None and isinstance(trigger_payload, dict) and isinstance(trigger_payload.get("default_payload"), dict):
+            val = get_nested_value(trigger_payload.get("default_payload"), path)
+        return val
     elif ref.startswith("nodes."):
         path = ref[6:]
         nodes_data = context.get("nodes", {})

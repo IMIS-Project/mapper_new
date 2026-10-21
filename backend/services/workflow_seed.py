@@ -25,6 +25,13 @@ DEFAULT_ENV_VARS = [
         "description": "System Identifier Header (x-api-key) required by SSPA MIS",
     },
     {
+        "key_name": "MIS_API_KEY",
+        "value": "kg8ICrhQGQRDnan8PoxHMRO825HrpCeM5sYcLbT9",
+        "is_secret": True,
+        "category": "MIS_GRM",
+        "description": "x-api-key header required by SSPA MIS endpoints",
+    },
+    {
         "key_name": "MIS_EMAIL",
         "value": "mis.b9v4c7w1y8@yopmail.com",
         "is_secret": False,
@@ -55,6 +62,135 @@ DEFAULT_ENV_VARS = [
 ]
 
 
+WORKING_STEPS_CONFIG: list[dict[str, Any]] = [
+    {
+        "step_key": "step_1",
+        "step_type": "start_webhook",
+        "step_order": 1,
+        "config": {
+            "default_payload": {
+                "source_ticket_id": "IMIS-TICKET-2026-00123",
+                "benef_cnic": "42201-1234567-1",
+                "category": "Payments",
+                "description": "Sample grievance description",
+            }
+        },
+    },
+    {
+        "step_key": "step_3",
+        "step_type": "http_request",
+        "step_order": 2,
+        "config": {
+            "method": "POST",
+            "url": "{{env.MIS_BASE_URL}}/api/v1/imis/auth/login",
+            "headers": {
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "x-api-key": "{{env.MIS_API_KEY}}",
+            },
+            "body": {
+                "email": "{{env.MIS_EMAIL}}",
+                "password": "{{env.MIS_PASSWORD}}",
+                "program_id": "{{env.MIS_PROGRAM_ID}}",
+            },
+        },
+    },
+    {
+        "step_key": "step_4",
+        "step_type": "http_request",
+        "step_order": 3,
+        "config": {
+            "method": "POST",
+            "url": "{{env.MIS_BASE_URL}}/api/v1/imis/complaint/create",
+            "headers": {
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+                "x-api-key": "{{env.MIS_API_KEY}}",
+                "Authorization": "Bearer {{nodes.step_3.data.access_token}}",
+            },
+            "body": {
+                "source_ticket_id": "{{trigger.default_payload.source_ticket_id}}",
+                "benef_cnic": "{{trigger.default_payload.benef_cnic}}",
+                "category": "{{trigger.default_payload.category}}",
+                "subcategory": "Delayed Transfer",
+                "complaint_type": "benef",
+                "complainant_name": "Fatima Bibi",
+                "complainant_phone": "03001234567",
+                "description": "{{trigger.default_payload.description}}",
+                "notes": "Received via IMIS Call Center",
+                "program_id": 4000001,
+            },
+        },
+    },
+]
+
+
+async def _upsert_working_workflow(
+    db: AsyncSession,
+    slug: str,
+    name: str,
+    description: str,
+) -> None:
+    stmt = select(Workflow).where(Workflow.slug == slug)
+    res = await db.execute(stmt)
+    wf = res.scalar_one_or_none()
+
+    if not wf:
+        wf = Workflow(
+            name=name,
+            slug=slug,
+            description=description,
+            trigger_type="webhook",
+            is_active=True,
+        )
+        db.add(wf)
+        await db.flush()
+
+        for s_def in WORKING_STEPS_CONFIG:
+            step = WorkflowStep(
+                workflow_id=wf.id,
+                step_key=s_def["step_key"],
+                step_type=s_def["step_type"],
+                step_order=s_def["step_order"],
+                config=s_def["config"],
+                is_active=True,
+            )
+            db.add(step)
+    else:
+        wf.is_active = True
+        step_stmt = select(WorkflowStep).where(WorkflowStep.workflow_id == wf.id)
+        existing_steps = (await db.execute(step_stmt)).scalars().all()
+        if not existing_steps:
+            for s_def in WORKING_STEPS_CONFIG:
+                step = WorkflowStep(
+                    workflow_id=wf.id,
+                    step_key=s_def["step_key"],
+                    step_type=s_def["step_type"],
+                    step_order=s_def["step_order"],
+                    config=s_def["config"],
+                    is_active=True,
+                )
+                db.add(step)
+        else:
+            step_map = {s.step_key: s for s in existing_steps}
+            for s_def in WORKING_STEPS_CONFIG:
+                k = s_def["step_key"]
+                if k in step_map:
+                    step_map[k].step_type = s_def["step_type"]
+                    step_map[k].config = s_def["config"]
+                    step_map[k].is_active = True
+                else:
+                    new_s = WorkflowStep(
+                        workflow_id=wf.id,
+                        step_key=k,
+                        step_type=s_def["step_type"],
+                        step_order=s_def["step_order"],
+                        config=s_def["config"],
+                        is_active=True,
+                    )
+                    db.add(new_s)
+
+
 async def seed_default_workflows(db: AsyncSession) -> None:
     for item in DEFAULT_ENV_VARS:
         await upsert_variable(
@@ -66,11 +202,11 @@ async def seed_default_workflows(db: AsyncSession) -> None:
             description=item["description"],
         )
 
-    # 1. Seed Complaint Intake Workflow
     intake_slug = "sspa-complaint-intake"
     stmt = select(Workflow).where(Workflow.slug == intake_slug)
     res = await db.execute(stmt)
-    if not res.scalar_one_or_none():
+    wf_intake = res.scalar_one_or_none()
+    if not wf_intake:
         wf_intake = Workflow(
             name="SSPA MIS - Complaint Intake (IMIS -> MIS)",
             slug=intake_slug,
@@ -181,12 +317,15 @@ async def seed_default_workflows(db: AsyncSession) -> None:
         ]
         for s in steps:
             db.add(s)
+    else:
+        wf_intake.is_active = False
 
     # 2. Seed Complaint Resolution Workflow
     resolve_slug = "sspa-complaint-resolve"
     stmt2 = select(Workflow).where(Workflow.slug == resolve_slug)
     res2 = await db.execute(stmt2)
-    if not res2.scalar_one_or_none():
+    wf_resolve = res2.scalar_one_or_none()
+    if not wf_resolve:
         wf_resolve = Workflow(
             name="SSPA MIS - Complaint Resolution (IMIS -> MIS)",
             slug=resolve_slug,
@@ -287,5 +426,20 @@ async def seed_default_workflows(db: AsyncSession) -> None:
         ]
         for s in steps2:
             db.add(s)
+    else:
+        wf_resolve.is_active = False
+
+    await _upsert_working_workflow(
+        db,
+        slug="w",
+        name="w1",
+        description="workflow",
+    )
+    await _upsert_working_workflow(
+        db,
+        slug="create-ticket",
+        name="Create Ticket",
+        description="Create Ticket on MIS",
+    )
 
     await db.commit()

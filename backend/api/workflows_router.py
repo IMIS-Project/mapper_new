@@ -352,7 +352,7 @@ async def execute_workflow(
     if not trigger_data:
         # Check if first step is trigger and has default_payload
         for s in wf.steps:
-            if s.step_type == "trigger" and isinstance(s.config, dict):
+            if s.step_type in ("trigger", "webhook", "start_webhook") and isinstance(s.config, dict):
                 trigger_data = s.config.get("default_payload", {})
                 break
 
@@ -506,7 +506,7 @@ async def execute_workflow_by_slug(
     trigger_data = payload or {}
     if not trigger_data:
         for s in wf.steps:
-            if s.step_type == "trigger" and isinstance(s.config, dict):
+            if s.step_type in ("trigger", "webhook", "start_webhook") and isinstance(s.config, dict):
                 trigger_data = s.config.get("default_payload", {})
                 break
 
