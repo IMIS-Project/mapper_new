@@ -309,6 +309,61 @@ async def run_workflow(
     }
 
 
+async def _get_or_create_step_endpoint(
+    db: AsyncSession,
+    workflow_slug: str,
+    workflow_name: str,
+    step_key: str,
+    target_url: str,
+    method: str = "POST",
+) -> int | None:
+    try:
+        from sqlalchemy import select
+        from backend.models.endpoint import ApiEndpoint
+        from backend.models.enums import ContentTypeEnum
+
+        clean_url = target_url.strip()
+        code_suffix = step_key.upper().replace("-", "_")
+        endpoint_code = f"WF_{workflow_slug.upper().replace('-', '_')}_{code_suffix}"
+
+        stmt = select(ApiEndpoint).where(ApiEndpoint.endpoint_code == endpoint_code)
+        ep = (await db.execute(stmt)).scalar_one_or_none()
+
+        if not ep:
+            source_url = f"/api/workflows/webhook/{workflow_slug}"
+            stmt2 = select(ApiEndpoint).where(
+                ApiEndpoint.source_api_url == source_url,
+                ApiEndpoint.target_api_url == clean_url,
+            )
+            ep = (await db.execute(stmt2)).scalar_one_or_none()
+
+        if ep:
+            if ep.target_api_url != clean_url:
+                ep.target_api_url = clean_url
+                await db.flush()
+            return ep.id
+
+        new_ep = ApiEndpoint(
+            endpoint_code=endpoint_code,
+            source_api_url=f"/api/workflows/webhook/{workflow_slug}",
+            target_api_url=clean_url,
+            method=method.upper(),
+            request_content_type=ContentTypeEnum.JSON.value,
+            is_active=True,
+            description=f"Workflow '{workflow_name}' Step: {step_key}",
+        )
+        db.add(new_ep)
+        await db.flush()
+        return new_ep.id
+    except Exception as exc:
+        logger.warning("Could not ensure endpoint for step %s (%s): %s", step_key, target_url, exc)
+        try:
+            await db.rollback()
+        except Exception:
+            pass
+        return None
+
+
 async def _record_workflow_to_api_call_log(
     db: AsyncSession,
     workflow: Workflow,
@@ -321,81 +376,102 @@ async def _record_workflow_to_api_call_log(
     request_headers: dict[str, Any] | None = None,
 ) -> None:
     try:
-        from sqlalchemy import select
-        from backend.models.endpoint import ApiEndpoint
         from backend.services.log_writer import write_call_log
 
-        last_http_step = None
-        for s in reversed(step_results):
-            if s.get("http_log"):
-                last_http_step = s
-                break
+        http_steps = [s for s in step_results if s.get("http_log")]
 
-        http_log = (last_http_step.get("http_log") or {}) if last_http_step else {}
-        http_req = http_log.get("request") or {}
-        http_resp = http_log.get("response") or {}
+        if http_steps:
+            for s in http_steps:
+                http_log = s.get("http_log") or {}
+                http_req = http_log.get("request") or {}
+                http_resp = http_log.get("response") or {}
 
-        external_target_url = (
-            http_req.get("url")
-            or "https://devmis.sspa.gos.pk/api/v1/imis/complaint/create"
-        )
+                target_url = (http_req.get("url") or "").strip()
+                if not target_url:
+                    continue
 
-        endpoint_code = f"WF_{workflow.slug.upper().replace('-', '_')}"
-        stmt_ep = select(ApiEndpoint).where(ApiEndpoint.endpoint_code == endpoint_code)
-        ep = (await db.execute(stmt_ep)).scalar_one_or_none()
-        if not ep:
-            url = f"/api/workflows/webhook/{workflow.slug}"
-            stmt_url = select(ApiEndpoint).where(ApiEndpoint.source_api_url == url)
-            ep = (await db.execute(stmt_url)).scalar_one_or_none()
+                method = (http_req.get("method") or "POST").upper()
+                step_key = s.get("step_key") or "http"
+                step_status = s.get("status") or "SUCCESS"
+                step_duration = s.get("duration_ms", 0)
 
-        if ep:
-            if not ep.target_api_url or ep.target_api_url.startswith("Workflow:"):
-                ep.target_api_url = external_target_url
-                await db.flush()
+                ep_id = await _get_or_create_step_endpoint(
+                    db=db,
+                    workflow_slug=workflow.slug,
+                    workflow_name=workflow.name,
+                    step_key=step_key,
+                    target_url=target_url,
+                    method=method,
+                )
+
+                resp_code = http_resp.get("status_code") or (200 if step_status == "SUCCESS" else 502)
+                req_body = http_req.get("body") if http_req.get("body") is not None else http_req.get("payload")
+                resp_body = http_resp.get("body") if http_resp.get("body") is not None else s.get("output")
+
+                source_resp = resp_body
+                if not isinstance(source_resp, (dict, list)):
+                    source_resp = {"result": source_resp}
+
+                step_log_data = {
+                    "success": step_status == "SUCCESS",
+                    "endpoint_id": ep_id,
+                    "request_body": req_body or trigger_payload,
+                    "request_headers": http_req.get("headers") or request_headers or {},
+                    "status_code": resp_code,
+                    "external_status_code": resp_code,
+                    "source_response": source_resp,
+                    "external_request_url": target_url,
+                    "external_request_headers": http_req.get("headers") or {},
+                    "external_request_body": req_body or {},
+                    "external_response_headers": http_resp.get("headers") or {},
+                    "data": resp_body,
+                    "target_response": resp_body,
+                    "total_time_ms": step_duration,
+                    "external_response_time_ms": step_duration,
+                    "error": s.get("error"),
+                }
+                await write_call_log(db, step_log_data)
         else:
+            from backend.models.endpoint import ApiEndpoint
             from backend.models.enums import ContentTypeEnum
-            ep = ApiEndpoint(
-                endpoint_code=endpoint_code,
-                source_api_url=f"/api/workflows/webhook/{workflow.slug}",
-                target_api_url=external_target_url,
-                method="POST",
-                request_content_type=ContentTypeEnum.JSON.value,
-                is_active=True,
-                description=f"Workflow Webhook: {workflow.name} ({workflow.slug})",
-            )
-            db.add(ep)
-            await db.flush()
+            from sqlalchemy import select
 
-        client_status = 200 if overall_status == "SUCCESS" else 502
-        upstream_status = http_resp.get("status_code") or client_status
+            endpoint_code = f"WF_{workflow.slug.upper().replace('-', '_')}"
+            stmt_ep = select(ApiEndpoint).where(ApiEndpoint.endpoint_code == endpoint_code)
+            ep = (await db.execute(stmt_ep)).scalar_one_or_none()
+            if not ep:
+                ep = ApiEndpoint(
+                    endpoint_code=endpoint_code,
+                    source_api_url=f"/api/workflows/webhook/{workflow.slug}",
+                    target_api_url="https://devmis.sspa.gos.pk/api/v1/imis/complaint/create",
+                    method="POST",
+                    request_content_type=ContentTypeEnum.JSON.value,
+                    is_active=True,
+                    description=f"Workflow Webhook: {workflow.name} ({workflow.slug})",
+                )
+                db.add(ep)
+                await db.flush()
 
-        source_resp = final_output
-        if isinstance(source_resp, dict) and "body" in source_resp and "status_code" in source_resp:
-            source_resp = source_resp.get("body")
-        if not isinstance(source_resp, dict):
-            source_resp = {"result": source_resp}
-
-        target_resp = http_resp.get("body") or source_resp
-
-        log_data = {
-            "success": overall_status == "SUCCESS",
-            "endpoint_id": ep.id if ep else None,
-            "request_body": trigger_payload,
-            "request_headers": request_headers or {},
-            "status_code": client_status,
-            "external_status_code": upstream_status,
-            "source_response": source_resp,
-            "external_request_url": http_req.get("url") or "",
-            "external_request_headers": http_req.get("headers") or {},
-            "external_request_body": http_req.get("payload") or trigger_payload,
-            "external_response_headers": http_resp.get("headers") or {},
-            "data": target_resp,
-            "target_response": target_resp,
-            "total_time_ms": total_time_ms,
-            "external_response_time_ms": last_http_step.get("duration_ms", total_time_ms) if last_http_step else total_time_ms,
-            "error": error_message,
-        }
-        await write_call_log(db, log_data)
+            client_status = 200 if overall_status == "SUCCESS" else 502
+            log_data = {
+                "success": overall_status == "SUCCESS",
+                "endpoint_id": ep.id if ep else None,
+                "request_body": trigger_payload,
+                "request_headers": request_headers or {},
+                "status_code": client_status,
+                "external_status_code": client_status,
+                "source_response": final_output if isinstance(final_output, (dict, list)) else {"result": final_output},
+                "external_request_url": ep.target_api_url if ep else "",
+                "external_request_headers": {},
+                "external_request_body": trigger_payload,
+                "external_response_headers": {},
+                "data": final_output,
+                "target_response": final_output,
+                "total_time_ms": total_time_ms,
+                "external_response_time_ms": total_time_ms,
+                "error": error_message,
+            }
+            await write_call_log(db, log_data)
     except Exception as exc:
         logger.warning("Could not record workflow call to api_call_log: %s", exc)
         try:
