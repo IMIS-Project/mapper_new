@@ -505,6 +505,7 @@ async def execute_workflow_by_slug(
     payload: dict[str, Any] = Body(default_factory=dict),
     db: AsyncSession = Depends(get_db),
     http_client: httpx.AsyncClient = Depends(get_http_client),
+    request_headers: dict[str, Any] | None = None,
 ):
     """External / Webhook execution endpoint callable by IMIS or other systems."""
     stmt = (
@@ -543,6 +544,7 @@ async def execute_workflow_by_slug(
         trigger_payload=trigger_data,
         db=db,
         http_client=http_client,
+        request_headers=request_headers,
     )
     if result["status"] == "FAILED":
         raise HTTPException(
@@ -603,5 +605,6 @@ async def webhook_trigger_endpoint(
     except Exception:
         body = dict(request.query_params)
 
-    return await execute_workflow_by_slug(slug, body, db, http_client)
+    headers = dict(request.headers)
+    return await execute_workflow_by_slug(slug, body, db, http_client, request_headers=headers)
 

@@ -442,4 +442,67 @@ async def seed_default_workflows(db: AsyncSession) -> None:
         description="Create Ticket on MIS",
     )
 
+    await _ensure_workflow_endpoint(db, "w", "w1")
+    await _ensure_workflow_endpoint(db, "create-ticket", "Create Ticket")
+    await _backfill_existing_workflow_runs_to_logs(db)
+
     await db.commit()
+
+
+async def _ensure_workflow_endpoint(
+    db: AsyncSession,
+    slug: str,
+    name: str,
+) -> None:
+    from backend.models.endpoint import ApiEndpoint
+    endpoint_code = f"WF_{slug.upper().replace('-', '_')}"
+    stmt = select(ApiEndpoint).where(ApiEndpoint.endpoint_code == endpoint_code)
+    ep = (await db.execute(stmt)).scalar_one_or_none()
+    if not ep:
+        url = f"/api/workflows/webhook/{slug}"
+        stmt_url = select(ApiEndpoint).where(ApiEndpoint.source_api_url == url)
+        ep = (await db.execute(stmt_url)).scalar_one_or_none()
+
+    if not ep:
+        ep = ApiEndpoint(
+            endpoint_code=endpoint_code,
+            source_api_url=f"/api/workflows/webhook/{slug}",
+            target_api_url=f"Workflow: {name}",
+            method="POST",
+            request_content_type="application/json",
+            is_active=True,
+            description=f"Workflow Webhook: {name} ({slug})",
+        )
+        db.add(ep)
+        await db.flush()
+
+
+async def _backfill_existing_workflow_runs_to_logs(db: AsyncSession) -> None:
+    from sqlalchemy import func
+    from backend.models.log import ApiCallLog
+    from backend.models.workflow import WorkflowRun
+    from backend.services.workflow_engine import _record_workflow_to_api_call_log
+
+    count_stmt = select(func.count(ApiCallLog.id))
+    log_count = (await db.execute(count_stmt)).scalar() or 0
+    if log_count > 0:
+        return
+
+    runs_stmt = (
+        select(WorkflowRun, Workflow)
+        .join(Workflow, WorkflowRun.workflow_id == Workflow.id)
+        .order_by(WorkflowRun.ran_at.asc())
+    )
+    runs = (await db.execute(runs_stmt)).all()
+    for run, wf in runs:
+        await _record_workflow_to_api_call_log(
+            db=db,
+            workflow=wf,
+            trigger_payload=run.trigger_payload or {},
+            step_results=run.step_results or [],
+            final_output=run.final_output,
+            overall_status=run.status,
+            total_time_ms=run.total_time_ms or 0,
+            error_message=run.error_message,
+        )
+

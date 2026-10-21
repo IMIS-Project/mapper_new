@@ -125,7 +125,7 @@ async def list_logs(
     count_stmt = (
         select(func.count())
         .select_from(ApiCallLog)
-        .join(
+        .outerjoin(
             ApiEndpoint,
             ApiCallLog.endpoint_id == ApiEndpoint.id,
         )
@@ -140,7 +140,7 @@ async def list_logs(
 
     stmt = (
         select(ApiCallLog, ApiEndpoint)
-        .join(
+        .outerjoin(
             ApiEndpoint,
             ApiCallLog.endpoint_id == ApiEndpoint.id,
         )
@@ -163,8 +163,8 @@ async def list_logs(
             id=log.id,
             endpoint_id=log.endpoint_id,
             request_id=str(log.id),
-            method=endpoint.method,
-            path=endpoint.source_api_url,
+            method=endpoint.method if endpoint else "POST",
+            path=endpoint.source_api_url if endpoint else "/api/workflows/webhook",
             status=log.status,
             overall_status=(
                 True
@@ -177,8 +177,8 @@ async def list_logs(
             internal_request_body=redact(log.source_request_payload),
             internal_api_client_response=redact(log.source_response),
             internal_api_client_status=log.client_status_code,
-            external_request_url=endpoint.target_api_url,
-            external_request_method=endpoint.method,
+            external_request_url=endpoint.target_api_url if endpoint else "",
+            external_request_method=endpoint.method if endpoint else "POST",
             external_request_headers=redact(log.target_request_headers),
             external_request_body=redact(log.target_request_payload),
             external_query_params=redact(log.target_query_params),
@@ -229,7 +229,7 @@ async def get_log(
 
     result = await db.execute(
         select(ApiCallLog, ApiEndpoint)
-        .join(
+        .outerjoin(
             ApiEndpoint,
             ApiCallLog.endpoint_id == ApiEndpoint.id,
         )
@@ -251,8 +251,8 @@ async def get_log(
             id=log.id,
             endpoint_id=log.endpoint_id,
             request_id=str(log.id),
-            method=endpoint.method,
-            path=endpoint.source_api_url,
+            method=endpoint.method if endpoint else "POST",
+            path=endpoint.source_api_url if endpoint else "/api/workflows/webhook",
             status=log.status,
             error_message=log.error_message,
             overall_status=(
@@ -266,8 +266,8 @@ async def get_log(
             internal_request_body=redact(log.source_request_payload),
             internal_api_client_response=redact(log.source_response),
             internal_api_client_status=log.client_status_code,
-            external_request_url=endpoint.target_api_url,
-            external_request_method=endpoint.method,
+            external_request_url=endpoint.target_api_url if endpoint else "",
+            external_request_method=endpoint.method if endpoint else "POST",
             external_request_headers=redact(log.target_request_headers),
             external_request_body=redact(log.target_request_payload),
             external_query_params=redact(log.target_query_params),
