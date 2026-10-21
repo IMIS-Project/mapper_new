@@ -334,12 +334,13 @@ async def _record_workflow_to_api_call_log(
             ep = (await db.execute(stmt_url)).scalar_one_or_none()
 
         if not ep:
+            from backend.models.enums import ContentTypeEnum
             ep = ApiEndpoint(
                 endpoint_code=endpoint_code,
                 source_api_url=f"/api/workflows/webhook/{workflow.slug}",
                 target_api_url=f"Workflow: {workflow.name}",
                 method="POST",
-                request_content_type="application/json",
+                request_content_type=ContentTypeEnum.JSON.value,
                 is_active=True,
                 description=f"Workflow Webhook: {workflow.name} ({workflow.slug})",
             )
@@ -388,4 +389,8 @@ async def _record_workflow_to_api_call_log(
         await write_call_log(db, log_data)
     except Exception as exc:
         logger.warning("Could not record workflow call to api_call_log: %s", exc)
+        try:
+            await db.rollback()
+        except Exception:
+            pass
 

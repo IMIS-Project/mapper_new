@@ -454,27 +454,35 @@ async def _ensure_workflow_endpoint(
     slug: str,
     name: str,
 ) -> None:
-    from backend.models.endpoint import ApiEndpoint
-    endpoint_code = f"WF_{slug.upper().replace('-', '_')}"
-    stmt = select(ApiEndpoint).where(ApiEndpoint.endpoint_code == endpoint_code)
-    ep = (await db.execute(stmt)).scalar_one_or_none()
-    if not ep:
-        url = f"/api/workflows/webhook/{slug}"
-        stmt_url = select(ApiEndpoint).where(ApiEndpoint.source_api_url == url)
-        ep = (await db.execute(stmt_url)).scalar_one_or_none()
+    try:
+        from backend.models.endpoint import ApiEndpoint
+        from backend.models.enums import ContentTypeEnum
+        endpoint_code = f"WF_{slug.upper().replace('-', '_')}"
+        stmt = select(ApiEndpoint).where(ApiEndpoint.endpoint_code == endpoint_code)
+        ep = (await db.execute(stmt)).scalar_one_or_none()
+        if not ep:
+            url = f"/api/workflows/webhook/{slug}"
+            stmt_url = select(ApiEndpoint).where(ApiEndpoint.source_api_url == url)
+            ep = (await db.execute(stmt_url)).scalar_one_or_none()
 
-    if not ep:
-        ep = ApiEndpoint(
-            endpoint_code=endpoint_code,
-            source_api_url=f"/api/workflows/webhook/{slug}",
-            target_api_url=f"Workflow: {name}",
-            method="POST",
-            request_content_type="application/json",
-            is_active=True,
-            description=f"Workflow Webhook: {name} ({slug})",
-        )
-        db.add(ep)
-        await db.flush()
+        if not ep:
+            ep = ApiEndpoint(
+                endpoint_code=endpoint_code,
+                source_api_url=f"/api/workflows/webhook/{slug}",
+                target_api_url=f"Workflow: {name}",
+                method="POST",
+                request_content_type=ContentTypeEnum.JSON.value,
+                is_active=True,
+                description=f"Workflow Webhook: {name} ({slug})",
+            )
+            db.add(ep)
+            await db.flush()
+    except Exception as exc:
+        logger.warning("Could not ensure endpoint for workflow %s: %s", slug, exc)
+        try:
+            await db.rollback()
+        except Exception:
+            pass
 
 
 async def _backfill_existing_workflow_runs_to_logs(db: AsyncSession) -> None:
