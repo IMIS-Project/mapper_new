@@ -25,6 +25,14 @@ _VALID_STATUS = {member.value for member in CallStatusEnum}
 LOG_ONLY_PLACEHOLDER = "Log only endpoint"
 
 
+def _resolve_external_url(endpoint: ApiEndpoint | None) -> str:
+    if not endpoint or not endpoint.target_api_url:
+        return "https://devmis.sspa.gos.pk/api/v1/imis/complaint/create"
+    if endpoint.target_api_url.startswith("Workflow:"):
+        return "https://devmis.sspa.gos.pk/api/v1/imis/complaint/create"
+    return endpoint.target_api_url
+
+
 def _external_response_or_placeholder(value: object) -> object:
     """Return the log-only placeholder when no upstream response was captured.
 
@@ -177,7 +185,7 @@ async def list_logs(
             internal_request_body=redact(log.source_request_payload),
             internal_api_client_response=redact(log.source_response),
             internal_api_client_status=log.client_status_code,
-            external_request_url=endpoint.target_api_url if endpoint else "",
+            external_request_url=_resolve_external_url(endpoint),
             external_request_method=endpoint.method if endpoint else "POST",
             external_request_headers=redact(log.target_request_headers),
             external_request_body=redact(log.target_request_payload),
@@ -266,7 +274,7 @@ async def get_log(
             internal_request_body=redact(log.source_request_payload),
             internal_api_client_response=redact(log.source_response),
             internal_api_client_status=log.client_status_code,
-            external_request_url=endpoint.target_api_url if endpoint else "",
+            external_request_url=_resolve_external_url(endpoint),
             external_request_method=endpoint.method if endpoint else "POST",
             external_request_headers=redact(log.target_request_headers),
             external_request_body=redact(log.target_request_payload),

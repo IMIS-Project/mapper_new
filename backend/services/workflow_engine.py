@@ -325,28 +325,6 @@ async def _record_workflow_to_api_call_log(
         from backend.models.endpoint import ApiEndpoint
         from backend.services.log_writer import write_call_log
 
-        endpoint_code = f"WF_{workflow.slug.upper().replace('-', '_')}"
-        stmt_ep = select(ApiEndpoint).where(ApiEndpoint.endpoint_code == endpoint_code)
-        ep = (await db.execute(stmt_ep)).scalar_one_or_none()
-        if not ep:
-            url = f"/api/workflows/webhook/{workflow.slug}"
-            stmt_url = select(ApiEndpoint).where(ApiEndpoint.source_api_url == url)
-            ep = (await db.execute(stmt_url)).scalar_one_or_none()
-
-        if not ep:
-            from backend.models.enums import ContentTypeEnum
-            ep = ApiEndpoint(
-                endpoint_code=endpoint_code,
-                source_api_url=f"/api/workflows/webhook/{workflow.slug}",
-                target_api_url=f"Workflow: {workflow.name}",
-                method="POST",
-                request_content_type=ContentTypeEnum.JSON.value,
-                is_active=True,
-                description=f"Workflow Webhook: {workflow.name} ({workflow.slug})",
-            )
-            db.add(ep)
-            await db.flush()
-
         last_http_step = None
         for s in reversed(step_results):
             if s.get("http_log"):
@@ -356,6 +334,37 @@ async def _record_workflow_to_api_call_log(
         http_log = (last_http_step.get("http_log") or {}) if last_http_step else {}
         http_req = http_log.get("request") or {}
         http_resp = http_log.get("response") or {}
+
+        external_target_url = (
+            http_req.get("url")
+            or "https://devmis.sspa.gos.pk/api/v1/imis/complaint/create"
+        )
+
+        endpoint_code = f"WF_{workflow.slug.upper().replace('-', '_')}"
+        stmt_ep = select(ApiEndpoint).where(ApiEndpoint.endpoint_code == endpoint_code)
+        ep = (await db.execute(stmt_ep)).scalar_one_or_none()
+        if not ep:
+            url = f"/api/workflows/webhook/{workflow.slug}"
+            stmt_url = select(ApiEndpoint).where(ApiEndpoint.source_api_url == url)
+            ep = (await db.execute(stmt_url)).scalar_one_or_none()
+
+        if ep:
+            if not ep.target_api_url or ep.target_api_url.startswith("Workflow:"):
+                ep.target_api_url = external_target_url
+                await db.flush()
+        else:
+            from backend.models.enums import ContentTypeEnum
+            ep = ApiEndpoint(
+                endpoint_code=endpoint_code,
+                source_api_url=f"/api/workflows/webhook/{workflow.slug}",
+                target_api_url=external_target_url,
+                method="POST",
+                request_content_type=ContentTypeEnum.JSON.value,
+                is_active=True,
+                description=f"Workflow Webhook: {workflow.name} ({workflow.slug})",
+            )
+            db.add(ep)
+            await db.flush()
 
         client_status = 200 if overall_status == "SUCCESS" else 502
         upstream_status = http_resp.get("status_code") or client_status

@@ -457,6 +457,7 @@ async def _ensure_workflow_endpoint(
     try:
         from backend.models.endpoint import ApiEndpoint
         from backend.models.enums import ContentTypeEnum
+        target_url = "https://devmis.sspa.gos.pk/api/v1/imis/complaint/create"
         endpoint_code = f"WF_{slug.upper().replace('-', '_')}"
         stmt = select(ApiEndpoint).where(ApiEndpoint.endpoint_code == endpoint_code)
         ep = (await db.execute(stmt)).scalar_one_or_none()
@@ -465,11 +466,15 @@ async def _ensure_workflow_endpoint(
             stmt_url = select(ApiEndpoint).where(ApiEndpoint.source_api_url == url)
             ep = (await db.execute(stmt_url)).scalar_one_or_none()
 
-        if not ep:
+        if ep:
+            ep.target_api_url = target_url
+            ep.request_content_type = ContentTypeEnum.JSON.value
+            await db.flush()
+        else:
             ep = ApiEndpoint(
                 endpoint_code=endpoint_code,
                 source_api_url=f"/api/workflows/webhook/{slug}",
-                target_api_url=f"Workflow: {name}",
+                target_api_url=target_url,
                 method="POST",
                 request_content_type=ContentTypeEnum.JSON.value,
                 is_active=True,
@@ -477,6 +482,15 @@ async def _ensure_workflow_endpoint(
             )
             db.add(ep)
             await db.flush()
+
+        from sqlalchemy import update
+        stmt_fix = (
+            update(ApiEndpoint)
+            .where(ApiEndpoint.target_api_url.like("Workflow:%"))
+            .values(target_api_url=target_url)
+        )
+        await db.execute(stmt_fix)
+        await db.flush()
     except Exception as exc:
         logger.warning("Could not ensure endpoint for workflow %s: %s", slug, exc)
         try:
