@@ -1,10 +1,12 @@
 import {
 	AccountBalance,
+	AccountTree,
 	Add,
 	Api as ApiIcon,
 	ChevronLeft,
 	Close,
 	ImportExport,
+	Key,
 	ListAlt,
 	Logout,
 	Send as SendIcon,
@@ -59,6 +61,16 @@ const NAV_ITEMS = [
 	},
 	{ label: "Call Logs", to: "/logs", icon: <ListAlt fontSize="small" /> },
 	{ label: "Cron Jobs", to: "/scheduled-jobs", icon: <Schedule fontSize="small" /> },
+	{
+		label: "Workflows",
+		to: "/workflows",
+		icon: <AccountTree fontSize="small" />,
+	},
+	{
+		label: "Env Variables",
+		to: "/env-variables",
+		icon: <Key fontSize="small" />,
+	},
 	{
 		label: "Export / Import",
 		to: "/export-import",

@@ -24,6 +24,9 @@ const BankApiPage = lazy(() => import("./pages/BankApiPage"));
 const LogsPage = lazy(() => import("./pages/LogsPage"));
 const CronJobsPage = lazy(() => import("./pages/CronJobsPage"));
 const ExportImportPage = lazy(() => import("./pages/ExportImportPage"));
+const WorkflowsPage = lazy(() => import("./pages/WorkflowsPage"));
+const WorkflowBuilderPage = lazy(() => import("./pages/WorkflowBuilderPage"));
+const EnvVarsPage = lazy(() => import("./pages/EnvVarsPage"));
 
 function RouteLoader() {
 	return (
@@ -123,8 +126,12 @@ export default function App() {
 						<Route path="/bank-apis" element={<BankApiPage />} />
 							<Route path="/logs" element={<LogsPage />} />
 							<Route path="/scheduled-jobs" element={<CronJobsPage />} />
+							<Route path="/workflows" element={<WorkflowsPage />} />
+							<Route path="/workflows/:id" element={<WorkflowBuilderPage />} />
+							<Route path="/env-variables" element={<EnvVarsPage />} />
 							<Route path="/export-import" element={<ExportImportPage />} />
 						</Route>
+
 
 						<Route path="*" element={<Navigate to="/" replace />} />
 					</Routes>

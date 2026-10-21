@@ -17,9 +17,11 @@ import os
 import re
 from pathlib import Path
 
-# Clear the environment so the real .env cannot leak production values into
-# settings' customise_sources / field validation during the test run.
+_path = os.environ.get("Path", os.environ.get("PATH", ""))
+_sysroot = os.environ.get("SystemRoot", os.environ.get("SYSTEMROOT", "C:\\Windows"))
 os.environ.clear()
+os.environ["PATH"] = _path
+os.environ["SystemRoot"] = _sysroot
 os.environ.update(
     {
         "JWT_SECRET": "foundation-test-only",
@@ -29,6 +31,7 @@ os.environ.update(
         "AUDIT_MONGO_COLLECTION": "audit_test_collection",
         "LOG_INGEST_TOKEN": "",
         "DATABASE_URL": "sqlite+aiosqlite:///:memory:",
+        "AUTH_BASE_URL": "https://test.example.com/auth",
     }
 )
 
@@ -65,5 +68,5 @@ if _ENV_PATH.exists():
     os.rename(_ENV_SANDBOX, _ENV_PATH)
     atexit.register(lambda: os.rename(_ENV_PATH, _ENV_BACKUP))
 
-from backend.core.config import Settings, patch  # noqa: E402, E402
+from backend.core.config import Settings  # noqa: E402
 

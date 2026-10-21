@@ -25,6 +25,9 @@ with (
     patch.dict(
         os.environ,
         {
+            "PATH": os.environ.get("Path", os.environ.get("PATH", "")),
+            "SystemRoot": os.environ.get("SystemRoot", os.environ.get("SYSTEMROOT", "C:\\Windows")),
+            "AUTH_BASE_URL": "https://test.example.com/auth",
             "JWT_SECRET": "foundation-test-only",
             "ENCRYPTION_KEY": "foundation-test-only",
             **AUDIT_TEST_SETTINGS,

@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import NullPool, StaticPool
 
 from backend.core.config import settings
 
@@ -27,7 +27,8 @@ if _IS_MEMORY_SQLITE:
 elif _IS_SQLITE:
     engine = create_async_engine(
         _URL,
-        connect_args={"check_same_thread": False},
+        poolclass=NullPool,
+        connect_args={"check_same_thread": False, "timeout": 30},
         echo=False,
     )
 else:

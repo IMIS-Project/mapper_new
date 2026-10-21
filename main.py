@@ -35,21 +35,53 @@ from backend.api.parameters_router import router as parameters_router
 from backend.api.sftp_router import router as sftp_router
 from backend.api.scheduled_jobs_router import router as scheduled_jobs_router
 from backend.api.webhook_router import router as webhook_router
+from backend.api.env_vars_router import router as env_vars_router
+from backend.api.workflows_router import router as workflows_router
 
 from backend.middleware.rate_limit import RateLimitMiddleware
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Manage process-wide resources.
-
-    A single shared ``httpx.AsyncClient`` (:func:`create_http_client`) is
-    created on startup and reused for every upstream call (auth handshakes,
-    gateway proxying) to benefit from connection pooling, then closed on
-    shutdown.
-    """
+    """Manage process-wide resources."""
     app.state.http_client = create_http_client()
     try:
+        try:
+            from backend.db.session import engine
+            from backend.db.base import Base
+            from backend.models.workflow import Workflow, WorkflowStep, WorkflowRun
+            from backend.models.env_var import ApiEnvVariable
+            from backend.models.endpoint import ApiEndpoint
+            from backend.models.parameter import ParameterMapping
+            from backend.models.log import ApiCallLog
+            from backend.models.user import User, Role, UserRole
+            core_tables = [
+                Workflow.__table__,
+                WorkflowStep.__table__,
+                WorkflowRun.__table__,
+                ApiEnvVariable.__table__,
+                ApiEndpoint.__table__,
+                ParameterMapping.__table__,
+                ApiCallLog.__table__,
+                User.__table__,
+                Role.__table__,
+                UserRole.__table__,
+            ]
+            async with engine.begin() as conn:
+                await conn.run_sync(
+                    lambda sync_conn: Base.metadata.create_all(sync_conn, tables=core_tables)
+                )
+        except Exception:
+            pass
+
+        try:
+            from backend.db.session import AsyncSessionLocal
+            from backend.services.workflow_seed import seed_default_workflows
+            async with AsyncSessionLocal() as session:
+                await seed_default_workflows(session)
+        except Exception:
+            pass
+
         await audit_schema.warm()
         await start_scheduler(app.state.http_client)
         yield
@@ -104,6 +136,8 @@ def create_app() -> FastAPI:
     app.include_router(export_import_router, prefix="/api")
     app.include_router(mock_router, prefix="/api")
     app.include_router(webhook_router, prefix="/api")
+    app.include_router(env_vars_router, prefix="/api")
+    app.include_router(workflows_router, prefix="/api")
 
     @app.get("/", tags=["meta"])
     async def root() -> dict[str, str]:
