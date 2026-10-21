@@ -153,6 +153,14 @@ export default function EndpointCard({ endpoint, onEdit, onDelete, onToggle, onS
 					sx={{ display: "flex", alignItems: "center", gap: 1, minWidth: 0 }}
 				>
 					<MethodChip method={endpoint?.method} />
+					{String(endpoint?.protocol ?? "").toUpperCase() === "SFTP" && (
+						<Chip
+							size="small"
+							label="SFTP"
+							variant="outlined"
+							sx={{ height: 22, fontFamily: codeFont, fontSize: "0.62rem" }}
+						/>
+					)}
 					<Tooltip title={code} arrow>
 						<Typography
 							sx={{

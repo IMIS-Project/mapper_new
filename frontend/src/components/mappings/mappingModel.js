@@ -69,19 +69,47 @@ export function parametersToRows(parameters = []) {
 	});
 }
 
+export function isSftpForm(form = {}) {
+	return (
+		String(form.protocol ?? "HTTP")
+			.trim()
+			.toUpperCase() === "SFTP"
+	);
+}
+
 export function validateMappingForm(form = {}, mappings = []) {
 	const errors = {};
 	// `sourceUrl` is the external API (the upstream the gateway actually
 	// calls) and `targetUrl` the internal route; see gateway_engine.
 	const sourceUrl = String(form.sourceUrl ?? "").trim();
 	const targetUrl = String(form.targetUrl ?? "").trim();
+	const sftp = isSftpForm(form);
 
 	if (!targetUrl) errors.targetUrl = "Internal URL is required.";
-	if (!sourceUrl) errors.sourceUrl = "External URL is required.";
+	if (!sftp && !sourceUrl) errors.sourceUrl = "External URL is required.";
 	if (!METHOD_OPTIONS.includes(form.sourceMethod))
 		errors.sourceMethod = "Pick an internal method.";
 	if (!METHOD_OPTIONS.includes(form.targetMethod))
 		errors.targetMethod = "Pick an external method.";
+
+	if (sftp) {
+		// The gateway only treats a target as SFTP-backed when it is a plain
+		// route path (``/v1/audio/play``), not an absolute HTTP URL.
+		if (targetUrl && /^[a-z][a-z0-9+.-]*:\/\//i.test(targetUrl)) {
+			errors.targetUrl =
+				"SFTP mappings serve a gateway path — remove the http(s):// prefix.";
+		}
+		if (!String(form.sftpHost ?? "").trim()) {
+			errors.sftpHost = "SFTP host is required.";
+		}
+		const port = Number(form.sftpPort || 22);
+		if (!Number.isInteger(port) || port < 1 || port > 65535) {
+			errors.sftpPort = "Port must be between 1 and 65535.";
+		}
+		if (!String(form.sftpRemotePath ?? "").trim()) {
+			errors.sftpRemotePath = "Remote path is required.";
+		}
+	}
 
 	const activeRows = mappings.filter(
 		(row) => row.enabled && (row.sourceField.trim() || row.targetField.trim()),
@@ -111,9 +139,14 @@ export function buildAutoDescription(form = {}, mappings = []) {
 	const enabled = filled.filter((row) => row.enabled);
 
 	// Rendered inbound -> outbound, the way the request actually flows.
-	const route = `${sourceMethod || "—"} ${String(targetUrl ?? "").trim() || "…"} → ${
-		targetMethod || "—"
-	} ${String(sourceUrl ?? "").trim() || "…"}`;
+	const remote = isSftpForm(form)
+		? `SFTP ${String(form.sftpHost ?? "").trim() || "…"}:${
+				String(form.sftpPort ?? "").trim() || "22"
+			}${String(form.sftpRemotePath ?? "").trim() || "/"}`
+		: `${targetMethod || "—"} ${String(sourceUrl ?? "").trim() || "…"}`;
+	const route = `${sourceMethod || "—"} ${
+		String(targetUrl ?? "").trim() || "…"
+	} → ${remote}`;
 
 	if (enabled.length === 0) return `${route} — no enabled field mappings yet`;
 
@@ -141,11 +174,20 @@ export function buildCompleteMappingPayload({
 		return text ? text : null;
 	};
 
+	const sftp = isSftpForm(form);
+	const targetUrl = String(form.targetUrl ?? "").trim();
+
 	return {
-		sourceUrl: String(form.sourceUrl ?? "").trim(),
-		targetUrl: String(form.targetUrl ?? "").trim(),
+		// SFTP mappings have no HTTP upstream: the same gateway path is kept
+		// in ``sourceUrl`` so the API contract stays non-null (and the audio
+		// endpoints remain addressable by route + method).
+		sourceUrl: sftp ? targetUrl : String(form.sourceUrl ?? "").trim(),
+		targetUrl,
 		sourceMethod: form.sourceMethod,
-		targetMethod: form.targetMethod,
+		// SFTP has no HTTP upstream: both verbs describe the same gateway
+		// route, and the backend stores ``targetMethod`` as the route verb.
+		targetMethod: sftp ? form.sourceMethod : form.targetMethod,
+		protocol: sftp ? "SFTP" : "HTTP",
 		mappings: mappings
 			.filter((row) => row.sourceField.trim() || row.targetField.trim())
 			.map((row) => ({
@@ -155,8 +197,18 @@ export function buildCompleteMappingPayload({
 				parameterType: row.parameterType,
 				parameterTypeValue: row.parameterType,
 			})),
-		api_id: authEnabled ? clean(auth.apiId) : null,
-		api_password: authEnabled ? clean(auth.apiPassword) : null,
-		api_auth_url: authEnabled ? clean(auth.apiAuthUrl) : null,
+		api_id: !sftp && authEnabled ? clean(auth.apiId) : null,
+		api_password: !sftp && authEnabled ? clean(auth.apiPassword) : null,
+		api_auth_url: !sftp && authEnabled ? clean(auth.apiAuthUrl) : null,
+		sftp_host: sftp ? clean(form.sftpHost) : null,
+		sftp_port: sftp ? Number(form.sftpPort) || 22 : null,
+		sftp_username: sftp ? clean(form.sftpUsername) : null,
+		// A blank password on edit leaves the stored secret untouched.
+		sftp_password: sftp ? clean(form.sftpPassword) : null,
+		sftp_private_key_path: sftp ? clean(form.sftpPrivateKeyPath) : null,
+		sftp_remote_path: sftp ? clean(form.sftpRemotePath) : null,
+		dynamic_filename_pattern: sftp
+			? clean(form.dynamicFilenamePattern)
+			: null,
 	};
 }

@@ -463,7 +463,22 @@ export default function EndpointList({
 								</TableCell>
 
 								<TableCell onClick={() => onEdit?.(endpoint)}>
-									<MethodChip method={endpoint?.method} />
+									<Box sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
+										<MethodChip method={endpoint?.method} />
+										{String(endpoint?.protocol ?? "").toUpperCase() ===
+											"SFTP" && (
+											<Chip
+												size="small"
+												label="SFTP"
+												variant="outlined"
+												sx={{
+													height: 20,
+													fontFamily: "var(--font-mono)",
+													fontSize: "0.58rem",
+												}}
+											/>
+										)}
+									</Box>
 								</TableCell>
 
 								<TableCell onClick={() => onEdit?.(endpoint)}>

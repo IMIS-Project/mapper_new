@@ -101,9 +101,10 @@ export default function MappingPreview({
 
 	const mappings = Array.isArray(payload?.mappings) ? payload.mappings : [];
 	const enabledCount = mappings.filter((row) => row.enabled).length;
-	const hasAuth = Boolean(
-		payload?.api_id || payload?.api_password || payload?.api_auth_url,
-	);
+	const isSftp = String(payload?.protocol ?? "").toUpperCase() === "SFTP";
+	const hasAuth =
+		!isSftp &&
+		Boolean(payload?.api_id || payload?.api_password || payload?.api_auth_url);
 
 	const handleCopy = async () => {
 		try {
@@ -258,7 +259,7 @@ export default function MappingPreview({
 									className="mono-label"
 									sx={{ color: "text.disabled", fontSize: "0.55rem", mb: 0.75 }}
 								>
-									External
+									{isSftp ? "SFTP source" : "External"}
 								</Typography>
 								<Box
 									sx={{
@@ -268,7 +269,16 @@ export default function MappingPreview({
 										mb: 0.75,
 									}}
 								>
-									<MethodChip method={payload?.targetMethod} />
+									{isSftp ? (
+										<Chip
+											size="small"
+											label="SFTP"
+											variant="outlined"
+											sx={{ fontFamily: codeFont, fontSize: "0.64rem" }}
+										/>
+									) : (
+										<MethodChip method={payload?.targetMethod} />
+									)}
 								</Box>
 								<Typography
 									sx={{
@@ -277,7 +287,9 @@ export default function MappingPreview({
 										wordBreak: "break-all",
 									}}
 								>
-									{payload?.sourceUrl || "—"}
+									{isSftp
+										? `sftp://${payload?.sftp_host || "host"}:${payload?.sftp_port || 22}${payload?.sftp_remote_path || "/"}`
+										: payload?.sourceUrl || "—"}
 								</Typography>
 							</Box>
 						</Box>
@@ -311,17 +323,28 @@ export default function MappingPreview({
 							).map((type) => (
 								<TypeChip key={type} type={type} />
 							))}
-							<Chip
-								size="small"
-								icon={<KeyOutlined sx={{ fontSize: 14 }} />}
-								label={hasAuth ? "Upstream auth enabled" : "No upstream auth"}
-								variant="outlined"
-								sx={{
-									fontFamily: codeFont,
-									fontSize: "0.68rem",
-									color: hasAuth ? "text.primary" : "text.disabled",
-								}}
-							/>
+							{isSftp && (
+								<Chip
+									size="small"
+									icon={<KeyOutlined sx={{ fontSize: 14 }} />}
+									label="SFTP transport"
+									variant="outlined"
+									sx={{ fontFamily: codeFont, fontSize: "0.68rem" }}
+								/>
+							)}
+							{!isSftp && (
+								<Chip
+									size="small"
+									icon={<KeyOutlined sx={{ fontSize: 14 }} />}
+									label={hasAuth ? "Upstream auth enabled" : "No upstream auth"}
+									variant="outlined"
+									sx={{
+										fontFamily: codeFont,
+										fontSize: "0.68rem",
+										color: hasAuth ? "text.primary" : "text.disabled",
+									}}
+								/>
+							)}
 						</Box>
 
 						{}

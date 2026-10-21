@@ -13,7 +13,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import httpx
 
 from backend.api.deps import get_current_active_user, get_db
-from backend.models import ParamTypeEnum, ParameterMapping, WebhookEvent
+from backend.models import (
+    ParamTypeEnum,
+    ParameterMapping,
+    ProtocolEnum,
+    WebhookEvent,
+)
 from backend.services.central_auth import CentralUser
 
 User = CentralUser
@@ -130,6 +135,53 @@ def _normalize_method(value: str) -> str:
     """Upper-case the HTTP verb sent by the editor (blank => ``POST``)."""
     normalized = (value or "").strip().upper()
     return normalized or "POST"
+
+
+_SFTP_CLEAR_FIELDS = {
+    "sftp_host": None,
+    "sftp_port": None,
+    "sftp_username": None,
+    "sftp_password": None,
+    "sftp_private_key_path": None,
+    "sftp_remote_path": None,
+    "dynamic_filename_pattern": None,
+}
+
+
+def _text(value: str | None) -> str | None:
+    cleaned = (value or "").strip()
+    return cleaned or None
+
+
+def _transport_fields(
+    payload: CompleteMappingRequest,
+    *,
+    for_update: bool = False,
+) -> dict:
+    """Map the request's transport settings onto ``api_endpoint`` columns.
+
+    SFTP-backed mappings carry the same credential set the audio APIs use.
+    When switching back to HTTP the stale SFTP columns are cleared. On an
+    update an empty password means "keep the stored secret", matching the
+    behaviour of the endpoint SFTP settings dialog.
+    """
+    protocol = payload.protocol or ProtocolEnum.HTTP
+    if protocol is not ProtocolEnum.SFTP:
+        return {"protocol": protocol.value, **_SFTP_CLEAR_FIELDS}
+
+    fields = {
+        "protocol": protocol.value,
+        "sftp_host": _text(payload.sftp_host),
+        "sftp_port": payload.sftp_port or 22,
+        "sftp_username": _text(payload.sftp_username),
+        "sftp_password": payload.sftp_password or None,
+        "sftp_private_key_path": _text(payload.sftp_private_key_path),
+        "sftp_remote_path": _text(payload.sftp_remote_path) or "/",
+        "dynamic_filename_pattern": _text(payload.dynamic_filename_pattern),
+    }
+    if for_update and not fields["sftp_password"]:
+        fields.pop("sftp_password")
+    return fields
 
 
 def _not_found(
@@ -358,6 +410,7 @@ async def save_complete_mapping(
                 "api_id": payload.api_id,
                 "api_password": payload.api_password,
                 "api_auth_url": payload.api_auth_url,
+                **_transport_fields(payload, for_update=True),
                 "updated_by": current_user.id,
             },
         )
@@ -387,6 +440,7 @@ async def save_complete_mapping(
                 "api_id": payload.api_id,
                 "api_password": payload.api_password,
                 "api_auth_url": payload.api_auth_url,
+                **_transport_fields(payload),
                 "created_by": current_user.id,
             },
         )
@@ -486,6 +540,7 @@ async def update_complete_mapping(
             "api_id": payload.api_id,
             "api_password": payload.api_password,
             "api_auth_url": payload.api_auth_url,
+            **_transport_fields(payload, for_update=True),
             "updated_by": current_user.id,
         },
     )

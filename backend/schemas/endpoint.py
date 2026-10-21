@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 from backend.models.enums import ContentTypeEnum, MethodEnum, ProtocolEnum
 from backend.schemas.parameter import ParameterResponse
@@ -139,9 +139,35 @@ class CompleteMappingRequest(BaseModel):
     targetMethod: str
     mappings: list[MappingItem]
     score: float | None = None
+    protocol: ProtocolEnum = ProtocolEnum.HTTP
     api_id: str | None = None
     api_password: str | None = None
     api_auth_url: str | None = None
+
+    # SFTP-backed mappings read their data straight from a remote server
+    # (the same shape the audio APIs use) instead of calling an HTTP upstream.
+    sftp_host: str | None = None
+    sftp_port: int | None = 22
+    sftp_username: str | None = None
+    sftp_password: str | None = None
+    sftp_private_key_path: str | None = None
+    sftp_remote_path: str | None = None
+    dynamic_filename_pattern: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_sftp(self) -> "CompleteMappingRequest":
+        """SFTP mappings need credentials and a scheme-less gateway route."""
+        if self.protocol is ProtocolEnum.SFTP:
+            if not (self.sftp_host or "").strip():
+                raise ValueError("sftp_host is required for SFTP mappings")
+            if str(self.targetUrl).strip().lower().startswith(
+                ("http://", "https://")
+            ):
+                raise ValueError(
+                    "targetUrl must be a gateway path (no http/https) for "
+                    "SFTP mappings"
+                )
+        return self
 
 
 class CompleteMappingResponse(BaseModel):

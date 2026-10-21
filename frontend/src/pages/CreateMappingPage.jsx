@@ -3,6 +3,7 @@ import {
 	AutoAwesome,
 	KeyOutlined,
 	SaveOutlined,
+	Storage,
 	Visibility,
 	VisibilityOff,
 	VisibilityOutlined,
@@ -21,6 +22,8 @@ import {
 	Select,
 	Switch,
 	TextField,
+	ToggleButton,
+	ToggleButtonGroup,
 	Typography,
 } from "@mui/material";
 import { alpha, useTheme } from "@mui/material/styles";
@@ -205,6 +208,136 @@ export function RouteComposer({
 	);
 }
 
+export function ProtocolSwitch({ protocol, onChange }) {
+	return (
+		<ToggleButtonGroup
+			size="small"
+			exclusive
+			value={protocol || "HTTP"}
+			onChange={(_event, next) => next && onChange(next)}
+			aria-label="Mapping transport"
+			sx={{
+				"& .MuiToggleButton-root": {
+					px: 1.5,
+					py: 0.4,
+					fontSize: "0.68rem",
+					fontFamily: "var(--font-mono)",
+					textTransform: "none",
+					letterSpacing: "0.03em",
+				},
+			}}
+		>
+			<ToggleButton value="HTTP">HTTP</ToggleButton>
+			<ToggleButton value="SFTP">SFTP</ToggleButton>
+		</ToggleButtonGroup>
+	);
+}
+
+export function SftpSourceFields({ form, onChange, errors = {} }) {
+	const theme = useTheme();
+	const codeFont = theme.typography.fontFamilyCode;
+	const [showPassword, setShowPassword] = useState(false);
+
+	const field = (key) => ({
+		value: form?.[key] ?? "",
+		onChange: (event) => onChange?.(key, event.target.value),
+		slotProps: {
+			htmlInput: { style: { fontFamily: codeFont, fontSize: "0.84rem" } },
+		},
+	});
+
+	return (
+		<Box
+			sx={{
+				display: "grid",
+				gridTemplateColumns: { xs: "1fr", md: "2fr 1fr" },
+				gap: 2,
+			}}
+		>
+			<TextField
+				fullWidth
+				required
+				label="SFTP host"
+				placeholder="recorder.example.com"
+				error={Boolean(errors.sftpHost)}
+				helperText={errors.sftpHost}
+				{...field("sftpHost")}
+			/>
+			<TextField
+				fullWidth
+				label="Port"
+				type="number"
+				placeholder="22"
+				error={Boolean(errors.sftpPort)}
+				helperText={errors.sftpPort}
+				slotProps={{
+					htmlInput: {
+						min: 1,
+						max: 65535,
+						style: { fontFamily: codeFont, fontSize: "0.84rem" },
+					},
+				}}
+				value={form?.sftpPort ?? ""}
+				onChange={(event) => onChange?.("sftpPort", event.target.value)}
+			/>
+			<TextField
+				fullWidth
+				label="Username"
+				placeholder="mapper"
+				autoComplete="off"
+				{...field("sftpUsername")}
+			/>
+			<TextField
+				fullWidth
+				label="Password"
+				type={showPassword ? "text" : "password"}
+				placeholder="Leave blank to keep the stored password"
+				autoComplete="new-password"
+				{...field("sftpPassword")}
+				slotProps={{
+					htmlInput: { style: { fontFamily: codeFont, fontSize: "0.84rem" } },
+					input: {
+						endAdornment: (
+							<InputAdornment position="end">
+								<IconButton
+									size="small"
+									edge="end"
+									onClick={() => setShowPassword((prev) => !prev)}
+									aria-label={showPassword ? "Hide SFTP password" : "Show SFTP password"}
+								>
+									{showPassword ? (
+										<VisibilityOff fontSize="small" />
+									) : (
+										<Visibility fontSize="small" />
+									)}
+								</IconButton>
+							</InputAdornment>
+						),
+					},
+				}}
+			/>
+			<TextField
+				fullWidth
+				label="Private key path"
+				placeholder="Optional — /home/mapper/.ssh/id_ed25519"
+				{...field("sftpPrivateKeyPath")}
+			/>
+			<TextField
+				fullWidth
+				required
+				label="Remote path"
+				placeholder="/recordings"
+				error={Boolean(errors.sftpRemotePath)}
+				helperText={
+					errors.sftpRemotePath ||
+					"Directory the gateway lists or reads files from."
+				}
+				{...field("sftpRemotePath")}
+			/>
+		</Box>
+	);
+}
+
 export default function CreateMappingPage() {
 	const theme = useTheme();
 	const isDark = theme.palette.mode === "dark";
@@ -218,6 +351,14 @@ export default function CreateMappingPage() {
 		sourceMethod: "POST",
 		targetUrl: "",
 		targetMethod: "POST",
+		protocol: "HTTP",
+		sftpHost: "",
+		sftpPort: "22",
+		sftpUsername: "",
+		sftpPassword: "",
+		sftpPrivateKeyPath: "",
+		sftpRemotePath: "/",
+		dynamicFilenamePattern: "",
 	});
 	const [authEnabled, setAuthEnabled] = useState(false);
 	const [auth, setAuth] = useState({
@@ -239,6 +380,7 @@ export default function CreateMappingPage() {
 	const filledCount = mappings.filter(
 		(row) => row.sourceField.trim() || row.targetField.trim(),
 	).length;
+	const isSftp = form.protocol === "SFTP";
 
 	const clearError = (key) =>
 		setErrors((prev) => {
@@ -358,14 +500,19 @@ export default function CreateMappingPage() {
 					<Box sx={{ maxWidth: { md: 640 } }}>
 						<RouteComposer
 							urlLabel="Internal URL"
-							placeholder="https://api.example.com/orders"
+							placeholder={
+								isSftp ? "/v1/audio/play" : "https://api.example.com/orders"
+							}
 							method={form.sourceMethod}
 							onMethodChange={(next) => updateForm({ sourceMethod: next })}
 							url={form.targetUrl}
 							onUrlChange={(next) => updateForm({ targetUrl: next })}
 							error={errors.targetUrl}
 							helperText={
-								errors.targetUrl || "Full URL or path of the incoming endpoint."
+								errors.targetUrl ||
+								(isSftp
+									? "Gateway path for the SFTP-backed endpoint, e.g. /v1/audio/play (no scheme)."
+									: "Full URL or path of the incoming endpoint.")
 							}
 						/>
 					</Box>
@@ -376,24 +523,59 @@ export default function CreateMappingPage() {
 			<Box component={motion.div} variants={itemVariants}>
 				<SectionCard
 					step="02"
-					title="External API"
-					caption="Where the mapped payload is forwarded."
-				>
-					<Box sx={{ maxWidth: { md: 640 } }}>
-						<RouteComposer
-							urlLabel="External URL"
-							placeholder="https://api.partner.example/v2/orders"
-							method={form.targetMethod}
-							onMethodChange={(next) => updateForm({ targetMethod: next })}
-							url={form.sourceUrl}
-							onUrlChange={(next) => updateForm({ sourceUrl: next })}
-							error={errors.sourceUrl}
-							helperText={
-								errors.sourceUrl ||
-								"Calls are routed by this URL + method pair."
-							}
+					title={isSftp ? "SFTP source" : "External API"}
+					caption={
+						isSftp
+							? "The gateway reads files straight from this server instead of calling an HTTP upstream."
+							: "Where the mapped payload is forwarded."
+					}
+					action={
+						<ProtocolSwitch
+							protocol={form.protocol}
+							onChange={(next) => updateForm({ protocol: next })}
 						/>
-					</Box>
+					}
+				>
+					{isSftp ? (
+						<>
+							<Box
+								sx={{
+									display: "flex",
+									alignItems: "center",
+									gap: 1,
+									mb: 2,
+									color: "text.secondary",
+								}}
+							>
+								<Storage sx={{ fontSize: 18, color: "primary.main" }} />
+								<Typography variant="body2" sx={{ fontSize: "0.78rem" }}>
+									Same credential set the SFTP audio endpoints use. The route
+									above serves the remote directory or file.
+								</Typography>
+							</Box>
+							<SftpSourceFields
+								form={form}
+								onChange={(key, value) => updateForm({ [key]: value })}
+								errors={errors}
+							/>
+						</>
+					) : (
+						<Box sx={{ maxWidth: { md: 640 } }}>
+							<RouteComposer
+								urlLabel="External URL"
+								placeholder="https://api.partner.example/v2/orders"
+								method={form.targetMethod}
+								onMethodChange={(next) => updateForm({ targetMethod: next })}
+								url={form.sourceUrl}
+								onUrlChange={(next) => updateForm({ sourceUrl: next })}
+								error={errors.sourceUrl}
+								helperText={
+									errors.sourceUrl ||
+									"Calls are routed by this URL + method pair."
+								}
+							/>
+						</Box>
+					)}
 				</SectionCard>
 			</Box>
 
@@ -402,29 +584,59 @@ export default function CreateMappingPage() {
 				<SectionCard
 					step="03"
 					title="Upstream authentication"
-					caption="Optional — the gateway fetches a bearer token before calling the external API."
+					caption={
+						isSftp
+							? "Not used — SFTP mappings authenticate with the server credentials above."
+							: "Optional — the gateway fetches a bearer token before calling the external API."
+					}
 					action={
-						<Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-							<Typography
-								className="mono-label"
-								sx={{
-									color: authEnabled ? "success.main" : "text.disabled",
-									fontSize: "0.55rem",
-								}}
-							>
-								{authEnabled ? "On" : "Off"}
-							</Typography>
-							<Switch
+						isSftp ? (
+							<Chip
 								size="small"
-								checked={authEnabled}
-								onChange={(event) => setAuthEnabled(event.target.checked)}
-								slotProps={{
-									input: { "aria-label": "Enable upstream authentication" },
-								}}
+								label="Not used"
+								variant="outlined"
+								sx={{ fontFamily: codeFont, fontSize: "0.62rem" }}
 							/>
-						</Box>
+						) : (
+							<Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+								<Typography
+									className="mono-label"
+									sx={{
+										color: authEnabled ? "success.main" : "text.disabled",
+										fontSize: "0.55rem",
+									}}
+								>
+									{authEnabled ? "On" : "Off"}
+								</Typography>
+								<Switch
+									size="small"
+									checked={authEnabled}
+									onChange={(event) => setAuthEnabled(event.target.checked)}
+									slotProps={{
+										input: { "aria-label": "Enable upstream authentication" },
+									}}
+								/>
+							</Box>
+						)
 					}
 				>
+					{isSftp ? (
+						<Box
+							sx={{
+								display: "flex",
+								alignItems: "center",
+								gap: 1.25,
+								color: "text.disabled",
+							}}
+						>
+							<KeyOutlined sx={{ fontSize: 18 }} />
+							<Typography variant="body2" sx={{ fontSize: "0.78rem" }}>
+								SFTP mappings are served from the remote server, so there is no
+								HTTP upstream token to fetch. Use the credentials in step 02.
+							</Typography>
+						</Box>
+					) : (
+						<>
 					<Collapse in={authEnabled} unmountOnExit>
 						<Box
 							sx={{
@@ -525,6 +737,8 @@ export default function CreateMappingPage() {
 								the switch to add an API ID, password and token URL.
 							</Typography>
 						</Box>
+					)}
+						</>
 					)}
 				</SectionCard>
 			</Box>
@@ -628,6 +842,22 @@ export default function CreateMappingPage() {
 								className="mono-label"
 								sx={{ color: "text.disabled", fontSize: "0.53rem" }}
 							>
+								Transport
+							</Typography>
+							<Typography
+								variant="body2"
+								sx={{ fontFamily: codeFont, fontSize: "0.74rem" }}
+							>
+								{isSftp
+									? `SFTP · ${form.sftpHost || "host not set"}:${form.sftpPort || 22}`
+									: "HTTP"}
+							</Typography>
+						</Box>
+						<Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+							<Typography
+								className="mono-label"
+								sx={{ color: "text.disabled", fontSize: "0.53rem" }}
+							>
 								Fields
 							</Typography>
 							<Typography
@@ -648,7 +878,11 @@ export default function CreateMappingPage() {
 								variant="body2"
 								sx={{ fontFamily: codeFont, fontSize: "0.74rem" }}
 							>
-								{authEnabled ? "credentials attached" : "none"}
+								{isSftp
+									? "not used"
+									: authEnabled
+										? "credentials attached"
+										: "none"}
 							</Typography>
 						</Box>
 					</Box>
@@ -705,8 +939,8 @@ export default function CreateMappingPage() {
 								textOverflow: "ellipsis",
 							}}
 						>
-							{form.sourceMethod} → {form.targetMethod} · {enabledCount} enabled
-							of {mappings.length} rows
+							{isSftp ? "SFTP" : form.sourceMethod} → {form.targetMethod} ·{" "}
+							{enabledCount} enabled of {mappings.length} rows
 						</Typography>
 					</Box>
 
