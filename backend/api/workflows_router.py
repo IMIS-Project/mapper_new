@@ -442,6 +442,34 @@ async def test_workflow_step(
         }
 
 
+@router.get("/runs/{run_id}", response_model=dict[str, Any])
+async def get_workflow_run_by_id(
+    run_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    stmt = select(WorkflowRun).where(WorkflowRun.id == run_id)
+    run = (await db.execute(stmt)).scalar_one_or_none()
+    if not run:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "RUN_NOT_FOUND", "message": f"Workflow run '{run_id}' not found"},
+        )
+    return {
+        "success": True,
+        "data": {
+            "id": run.id,
+            "workflow_id": run.workflow_id,
+            "status": run.status,
+            "total_time_ms": run.total_time_ms,
+            "ran_at": run.ran_at,
+            "error_message": run.error_message,
+            "trigger_payload": run.trigger_payload,
+            "step_results": run.step_results,
+            "final_output": run.final_output,
+        },
+    }
+
+
 @router.get("/{wf_id}/runs", response_model=dict[str, Any])
 async def get_workflow_runs(
     wf_id: str,
