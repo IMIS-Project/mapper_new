@@ -138,6 +138,7 @@ def create_app() -> FastAPI:
     app.include_router(webhook_router, prefix="/api")
     app.include_router(env_vars_router, prefix="/api")
     app.include_router(workflows_router, prefix="/api")
+    app.include_router(workflows_router)
 
     @app.get("/", tags=["meta"])
     async def root() -> dict[str, str]:

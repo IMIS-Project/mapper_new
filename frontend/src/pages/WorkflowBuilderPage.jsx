@@ -59,6 +59,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useSnackbar } from "../context/SnackbarContext";
+import { API_BASE_URL } from "../config/api";
 import workflowService from "../services/workflowService";
 
 const NODE_TYPES = [
@@ -359,7 +360,10 @@ export default function WorkflowBuilderPage() {
 		return NODE_TYPES.find((n) => n.value === t) || NODE_TYPES[0];
 	};
 
-	const webhookUrl = `${window.location.protocol}//${window.location.host}/api/workflows/webhook/${workflow?.slug || ""}`;
+	const baseApi = (API_BASE_URL || "/api").startsWith("http")
+		? API_BASE_URL
+		: `${window.location.origin}${(API_BASE_URL || "/api").startsWith("/") ? "" : "/"}${API_BASE_URL || "/api"}`;
+	const webhookUrl = `${baseApi}/workflows/webhook/${workflow?.slug || ""}`;
 
 	if (isLoading) {
 		return (
