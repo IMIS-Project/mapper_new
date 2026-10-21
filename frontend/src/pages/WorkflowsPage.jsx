@@ -237,10 +237,11 @@ export default function WorkflowsPage() {
 			) : (
 				<Grid container spacing={2.5}>
 					{workflows.map((wf) => (
-						<Grid item xs={12} md={6} key={wf.id}>
+						<Grid item xs={12} md={6} key={wf.id} sx={{ display: "flex" }}>
 							<Card
 								elevation={0}
 								sx={{
+									width: "100%",
 									height: "100%",
 									display: "flex",
 									flexDirection: "column",
@@ -255,10 +256,25 @@ export default function WorkflowsPage() {
 							>
 								<CardContent sx={{ p: 2.5, flex: 1, display: "flex", flexDirection: "column" }}>
 									<Stack direction="row" justifyContent="space-between" alignItems="flex-start" sx={{ mb: 1 }}>
-										<Box>
-											<Typography variant="h6" fontWeight={700}>
-												{wf.name}
-											</Typography>
+										<Box sx={{ minWidth: 0, flex: 1, mr: 1.5 }}>
+											<Tooltip title={wf.name} placement="top-start">
+												<Typography
+													variant="h6"
+													fontWeight={700}
+													sx={{
+														fontSize: "1.05rem",
+														lineHeight: 1.3,
+														height: "2.6em",
+														display: "-webkit-box",
+														WebkitLineClamp: 2,
+														WebkitBoxOrient: "vertical",
+														overflow: "hidden",
+														textOverflow: "ellipsis",
+													}}
+												>
+													{wf.name}
+												</Typography>
+											</Tooltip>
 											<Typography
 												variant="caption"
 												sx={{
@@ -269,12 +285,18 @@ export default function WorkflowsPage() {
 													py: 0.2,
 													borderRadius: 1,
 													fontWeight: 600,
+													display: "inline-block",
+													mt: 0.5,
+													maxWidth: "100%",
+													overflow: "hidden",
+													textOverflow: "ellipsis",
+													whiteSpace: "nowrap",
 												}}
 											>
 												slug: {wf.slug}
 											</Typography>
 										</Box>
-										<Stack direction="row" spacing={1} alignItems="center">
+										<Stack direction="row" spacing={1} alignItems="center" sx={{ flexShrink: 0 }}>
 											<Tooltip title={wf.is_active ? "Click to set INACTIVE" : "Click to set LIVE"}>
 												<Chip
 													label={wf.is_active ? "● LIVE" : "○ INACTIVE"}
@@ -313,21 +335,25 @@ export default function WorkflowsPage() {
 										</Stack>
 									</Stack>
 
-									<Typography
-										variant="body2"
-										color="text.secondary"
-										sx={{
-											mt: 1,
-											mb: 2,
-											flex: 1,
-											display: "-webkit-box",
-											WebkitLineClamp: 2,
-											WebkitBoxOrient: "vertical",
-											overflow: "hidden",
-										}}
-									>
-										{wf.description || "No description provided."}
-									</Typography>
+									<Tooltip title={wf.description || ""} placement="top-start">
+										<Typography
+											variant="body2"
+											color="text.secondary"
+											sx={{
+												mt: 1,
+												mb: 2,
+												height: "2.8em",
+												lineHeight: 1.4,
+												display: "-webkit-box",
+												WebkitLineClamp: 2,
+												WebkitBoxOrient: "vertical",
+												overflow: "hidden",
+												textOverflow: "ellipsis",
+											}}
+										>
+											{wf.description || "No description provided."}
+										</Typography>
+									</Tooltip>
 
 									<Divider sx={{ my: 1.5 }} />
 
@@ -336,7 +362,7 @@ export default function WorkflowsPage() {
 										direction="row"
 										justifyContent="space-between"
 										alignItems="center"
-										sx={{ mb: 2 }}
+										sx={{ mb: 2, height: 28 }}
 									>
 										<Chip
 											label={`${wf.step_count || 0} Steps`}
@@ -364,7 +390,7 @@ export default function WorkflowsPage() {
 									</Stack>
 
 									{/* Action Buttons */}
-									<Stack direction="row" spacing={1} justifyContent="flex-end">
+									<Stack direction="row" spacing={1} justifyContent="flex-end" sx={{ mt: "auto" }}>
 										<Button
 											variant="outlined"
 											color="primary"
