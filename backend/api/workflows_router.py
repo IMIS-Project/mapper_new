@@ -216,7 +216,7 @@ async def update_workflow(
 
     await db.commit()
     await db.refresh(wf)
-    return {"success": True, "message": "Workflow updated", "data": {"id": wf.id, "slug": wf.slug}}
+    return {"success": True, "message": "Workflow updated", "data": {"id": wf.id, "slug": wf.slug, "is_active": wf.is_active}}
 
 
 @router.delete("/{wf_id}", response_model=dict[str, Any])

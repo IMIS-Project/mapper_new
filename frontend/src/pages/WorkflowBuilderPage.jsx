@@ -216,17 +216,41 @@ export default function WorkflowBuilderPage() {
 
 	const toggleActiveMutation = useMutation({
 		mutationFn: (newActive) => workflowService.updateWorkflow(id, { is_active: newActive }),
+		onMutate: async (newActive) => {
+			await queryClient.cancelQueries({ queryKey: ["workflow", id] });
+			await queryClient.cancelQueries({ queryKey: ["workflows"] });
+			const previousWorkflow = queryClient.getQueryData(["workflow", id]);
+			const previousWorkflows = queryClient.getQueryData(["workflows"]);
+
+			queryClient.setQueryData(["workflow", id], (old) => {
+				if (!old) return old;
+				return { ...old, is_active: newActive };
+			});
+			queryClient.setQueryData(["workflows"], (old) => {
+				if (!Array.isArray(old)) return old;
+				return old.map((wf) => (wf.id === id ? { ...wf, is_active: newActive } : wf));
+			});
+			return { previousWorkflow, previousWorkflows };
+		},
+		onError: (err, _vars, context) => {
+			if (context?.previousWorkflow) {
+				queryClient.setQueryData(["workflow", id], context.previousWorkflow);
+			}
+			if (context?.previousWorkflows) {
+				queryClient.setQueryData(["workflows"], context.previousWorkflows);
+			}
+			showError(err.response?.data?.detail?.message || err.response?.data?.detail || err.message || "Failed to update workflow status");
+		},
 		onSuccess: (_, newActive) => {
 			showSuccess(
 				newActive
 					? "Workflow is now LIVE! Webhook listener is actively listening."
-					: "Workflow paused (Unlive / Inactive). Webhook listener paused."
+					: "Workflow paused (Inactive). Webhook listener paused."
 			);
+		},
+		onSettled: () => {
 			queryClient.invalidateQueries({ queryKey: ["workflow", id] });
 			queryClient.invalidateQueries({ queryKey: ["workflows"] });
-		},
-		onError: (err) => {
-			showError(err.response?.data?.detail?.message || err.response?.data?.detail || err.message || "Failed to update workflow status");
 		},
 	});
 
@@ -415,6 +439,7 @@ export default function WorkflowBuilderPage() {
 					{/* Live / Unlive Mode Switch */}
 					<Paper
 						variant="outlined"
+						onClick={() => toggleActiveMutation.mutate(!workflow.is_active)}
 						sx={{
 							px: 1.5,
 							py: 0.5,
@@ -426,6 +451,11 @@ export default function WorkflowBuilderPage() {
 								? alpha(theme.palette.success.main, 0.08)
 								: alpha(theme.palette.action.disabledBackground, 0.04),
 							borderRadius: 2,
+							cursor: "pointer",
+							transition: "all 0.15s ease",
+							"&:hover": {
+								borderColor: workflow.is_active ? "success.dark" : "text.secondary",
+							},
 						}}
 					>
 						<Stack direction="row" alignItems="center" spacing={0.8}>
@@ -442,7 +472,7 @@ export default function WorkflowBuilderPage() {
 								variant="caption"
 								fontWeight={700}
 								color={workflow.is_active ? "success.main" : "text.secondary"}
-								sx={{ letterSpacing: 0.5 }}
+								sx={{ letterSpacing: 0.5, userSelect: "none" }}
 							>
 								{workflow.is_active ? "LIVE LISTENER" : "INACTIVE"}
 							</Typography>
@@ -459,7 +489,10 @@ export default function WorkflowBuilderPage() {
 								color="success"
 								checked={Boolean(workflow.is_active)}
 								disabled={toggleActiveMutation.isPending}
-								onChange={(e) => toggleActiveMutation.mutate(e.target.checked)}
+								onChange={(e) => {
+									e.stopPropagation();
+									toggleActiveMutation.mutate(e.target.checked);
+								}}
 							/>
 						</Tooltip>
 					</Paper>

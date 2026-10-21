@@ -91,16 +91,30 @@ export default function WorkflowsPage() {
 
 	const toggleActiveMutation = useMutation({
 		mutationFn: ({ id, is_active }) => workflowService.updateWorkflow(id, { is_active }),
+		onMutate: async ({ id, is_active }) => {
+			await queryClient.cancelQueries({ queryKey: ["workflows"] });
+			const previous = queryClient.getQueryData(["workflows"]);
+			queryClient.setQueryData(["workflows"], (old) => {
+				if (!Array.isArray(old)) return old;
+				return old.map((wf) => (wf.id === id ? { ...wf, is_active } : wf));
+			});
+			return { previous };
+		},
+		onError: (err, _vars, context) => {
+			if (context?.previous) {
+				queryClient.setQueryData(["workflows"], context.previous);
+			}
+			showError(err.response?.data?.detail?.message || err.response?.data?.detail || err.message || "Failed to update workflow");
+		},
 		onSuccess: (_, vars) => {
 			showSuccess(
 				vars.is_active
 					? "Workflow is now LIVE! Webhook listener is actively listening."
-					: "Workflow paused (Unlive / Inactive). Webhook listener paused."
+					: "Workflow paused (Inactive). Webhook listener paused."
 			);
-			queryClient.invalidateQueries({ queryKey: ["workflows"] });
 		},
-		onError: (err) => {
-			showError(err.response?.data?.detail?.message || err.response?.data?.detail || err.message || "Failed to update workflow");
+		onSettled: () => {
+			queryClient.invalidateQueries({ queryKey: ["workflows"] });
 		},
 	});
 
@@ -261,19 +275,35 @@ export default function WorkflowsPage() {
 											</Typography>
 										</Box>
 										<Stack direction="row" spacing={1} alignItems="center">
-											<Chip
-												label={wf.is_active ? "● LIVE" : "○ INACTIVE"}
-												size="small"
-												color={wf.is_active ? "success" : "default"}
-												variant={wf.is_active ? "filled" : "outlined"}
-												sx={{ fontWeight: 700, fontSize: "0.72rem" }}
-											/>
+											<Tooltip title={wf.is_active ? "Click to set INACTIVE" : "Click to set LIVE"}>
+												<Chip
+													label={wf.is_active ? "● LIVE" : "○ INACTIVE"}
+													size="small"
+													color={wf.is_active ? "success" : "default"}
+													variant={wf.is_active ? "filled" : "outlined"}
+													clickable
+													onClick={(e) => {
+														e.stopPropagation();
+														toggleActiveMutation.mutate({ id: wf.id, is_active: !wf.is_active });
+													}}
+													sx={{
+														fontWeight: 700,
+														fontSize: "0.72rem",
+														cursor: "pointer",
+														userSelect: "none",
+														transition: "all 0.15s ease",
+														"&:hover": {
+															opacity: 0.85,
+														},
+													}}
+												/>
+											</Tooltip>
 											<Tooltip title={wf.is_active ? "Click to Pause (Unlive)" : "Click to Make LIVE (Activate Webhook)"}>
 												<Switch
 													size="small"
 													color="success"
 													checked={Boolean(wf.is_active)}
-													disabled={toggleActiveMutation.isPending}
+													disabled={toggleActiveMutation.isPending && toggleActiveMutation.variables?.id === wf.id}
 													onChange={(e) => {
 														e.stopPropagation();
 														toggleActiveMutation.mutate({ id: wf.id, is_active: e.target.checked });
