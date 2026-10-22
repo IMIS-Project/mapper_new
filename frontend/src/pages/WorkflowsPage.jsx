@@ -80,12 +80,26 @@ export default function WorkflowsPage() {
 
 	const deleteMutation = useMutation({
 		mutationFn: (id) => workflowService.deleteWorkflow(id),
+		onMutate: async (id) => {
+			await queryClient.cancelQueries({ queryKey: ["workflows"] });
+			const previous = queryClient.getQueryData(["workflows"]);
+			queryClient.setQueryData(["workflows"], (old) => {
+				if (!Array.isArray(old)) return old;
+				return old.filter((wf) => wf.id !== id);
+			});
+			return { previous };
+		},
+		onError: (err, _id, context) => {
+			if (context?.previous) {
+				queryClient.setQueryData(["workflows"], context.previous);
+			}
+			showError(err.response?.data?.detail || err.message || "Failed to delete workflow");
+		},
 		onSuccess: () => {
 			showSuccess("Workflow deleted");
-			queryClient.invalidateQueries({ queryKey: ["workflows"] });
 		},
-		onError: (err) => {
-			showError(err.response?.data?.detail || err.message || "Failed to delete workflow");
+		onSettled: () => {
+			queryClient.invalidateQueries({ queryKey: ["workflows"] });
 		},
 	});
 

@@ -42,7 +42,7 @@ async def async_db():
 
 
 @pytest.mark.asyncio
-async def test_sspa_intake_workflow_execution(async_db: AsyncSession):
+async def test_sspa_create_ticket_workflow_execution(async_db: AsyncSession):
     # 1. Seed defaults (env variables & SSPA workflows)
     await seed_default_workflows(async_db)
 
@@ -50,19 +50,17 @@ async def test_sspa_intake_workflow_execution(async_db: AsyncSession):
     from sqlalchemy import select
     from sqlalchemy.orm import selectinload
 
-    stmt = select(Workflow).options(selectinload(Workflow.steps)).where(Workflow.slug == "sspa-complaint-intake")
+    stmt = select(Workflow).options(selectinload(Workflow.steps)).where(Workflow.slug == "w")
     wf = (await async_db.execute(stmt)).scalar_one()
 
     # 3. Create mock HTTP client
     mock_http_client = MagicMock(spec=httpx.AsyncClient)
-
     captured_requests = []
 
     async def mock_request(**kwargs):
         captured_requests.append(kwargs)
         url = kwargs.get("url", "")
         if "auth/login" in url:
-            # Login response matching SSPA MIS format
             resp = MagicMock(spec=httpx.Response)
             resp.status_code = 200
             resp.headers = {"Content-Type": "application/json"}
@@ -77,7 +75,6 @@ async def test_sspa_intake_workflow_execution(async_db: AsyncSession):
             }
             return resp
         elif "complaint/create" in url:
-            # Complaint intake response
             resp = MagicMock(spec=httpx.Response)
             resp.status_code = 201
             resp.headers = {"Content-Type": "application/json"}
@@ -98,16 +95,12 @@ async def test_sspa_intake_workflow_execution(async_db: AsyncSession):
 
     # 4. Run workflow
     trigger_payload = {
-        "source_ticket_id": "IMIS-TICKET-2026-00123",
-        "benef_cnic": "42201-1234567-1",
-        "category": "Payments",
-        "subcategory": "Delayed Transfer",
-        "complaint_type": "benef",
-        "complainant_name": "Fatima Bibi",
-        "complainant_phone": "03001234567",
-        "description": "Payment was not deposited into designated branch account.",
-        "notes": "Received via IMIS Call Center",
-        "program_id": 1,
+        "default_payload": {
+            "source_ticket_id": "IMIS-TICKET-2026-00123",
+            "benef_cnic": "42201-1234567-1",
+            "category": "Payments",
+            "description": "Sample grievance description",
+        }
     }
 
     result = await run_workflow(
@@ -120,7 +113,7 @@ async def test_sspa_intake_workflow_execution(async_db: AsyncSession):
     # 5. Assert workflow outcome
     assert result["status"] == "SUCCESS"
     assert result["error"] is None
-    assert len(result["step_results"]) == 6
+    assert len(result["step_results"]) == 3
 
     # Verify the two HTTP calls happened
     assert len(captured_requests) == 2
@@ -129,7 +122,6 @@ async def test_sspa_intake_workflow_execution(async_db: AsyncSession):
     login_req = captured_requests[0]
     assert login_req["method"] == "POST"
     assert login_req["url"] == "https://devmis.sspa.gos.pk/api/v1/imis/auth/login"
-    assert login_req["headers"]["x-api-key"] == "MIS_KEY"
     assert login_req["json"]["email"] == "mis.b9v4c7w1y8@yopmail.com"
 
     # Verify Call 2 (Complaint intake)
@@ -137,91 +129,28 @@ async def test_sspa_intake_workflow_execution(async_db: AsyncSession):
     assert intake_req["method"] == "POST"
     assert intake_req["url"] == "https://devmis.sspa.gos.pk/api/v1/imis/complaint/create"
     assert intake_req["headers"]["Authorization"] == "Bearer test-bearer-token-abc-123"
-    assert intake_req["headers"]["x-api-key"] == "MIS_KEY"
-
-    # Verify Call 2 body was AES-256-GCM encrypted and decryptable
-    encrypted_body = intake_req["json"]
-    assert "encrypted_data" in encrypted_body
-    decrypted_body = decrypt_sspa_payload(encrypted_body, "0123456789abcdef0123456789abcdef")
-    assert decrypted_body["source_ticket_id"] == "IMIS-TICKET-2026-00123"
-    assert decrypted_body["benef_cnic"] == "42201-1234567-1"
-    assert decrypted_body["category"] == "Payments"
+    assert intake_req["json"]["source_ticket_id"] == "IMIS-TICKET-2026-00123"
+    assert intake_req["json"]["benef_cnic"] == "42201-1234567-1"
 
     # Verify final response passed through
-    assert result["final_output"]["complaint_number"] == "SSPA_2026_Oct_1042"
-    assert result["final_output"]["imis_ticket_id"] == "IMIS-TICKET-2026-00123"
+    assert result["final_output"]["data"]["complaint_number"] == "SSPA_2026_Oct_1042"
+    assert result["final_output"]["data"]["imis_ticket_id"] == "IMIS-TICKET-2026-00123"
 
 
 @pytest.mark.asyncio
-async def test_sspa_resolve_workflow_execution(async_db: AsyncSession):
+async def test_cleanup_deprecated_workflows(async_db: AsyncSession):
+    # Pre-populate deprecated workflows to verify seed_default_workflows deletes them
+    dwf1 = Workflow(name="Old Intake", slug="sspa-complaint-intake", trigger_type="webhook", is_active=False)
+    dwf2 = Workflow(name="Old Resolve", slug="sspa-complaint-resolve", trigger_type="webhook", is_active=False)
+    async_db.add(dwf1)
+    async_db.add(dwf2)
+    await async_db.commit()
+
     await seed_default_workflows(async_db)
 
     from sqlalchemy import select
-    from sqlalchemy.orm import selectinload
-
-    stmt = select(Workflow).options(selectinload(Workflow.steps)).where(Workflow.slug == "sspa-complaint-resolve")
-    wf = (await async_db.execute(stmt)).scalar_one()
-
-    mock_http_client = MagicMock(spec=httpx.AsyncClient)
-    captured_requests = []
-
-    async def mock_request(**kwargs):
-        captured_requests.append(kwargs)
-        url = kwargs.get("url", "")
-        if "auth/login" in url:
-            resp = MagicMock(spec=httpx.Response)
-            resp.status_code = 200
-            resp.headers = {"Content-Type": "application/json"}
-            resp.json.return_value = {
-                "status": "success",
-                "data": {"access_token": "token-resolve-456"},
-            }
-            return resp
-        elif "complaint/update-status" in url:
-            resp = MagicMock(spec=httpx.Response)
-            resp.status_code = 200
-            resp.headers = {"Content-Type": "application/json"}
-            resp.json.return_value = {
-                "status": "success",
-                "message": "Complaint status updated successfully",
-                "data": {
-                    "source_ticket_id": "IMIS-TICKET-2026-00123",
-                    "imis_ticket_id": "IMIS-TICKET-2026-00123",
-                    "status": "resolved",
-                    "complaint_id": "a9b8c7d6-e5f4-4321-abcd-1234567890ab",
-                },
-            }
-            return resp
-        raise RuntimeError(f"Unexpected url {url}")
-
-    mock_http_client.request = AsyncMock(side_effect=mock_request)
-
-    resolve_payload = {
-        "source_ticket_id": "IMIS-TICKET-2026-00123",
-        "description": "Payment disbursed successfully at local branch counter.",
-        "resolved_at": "2026-10-19 16:30:00",
-    }
-
-    result = await run_workflow(
-        workflow=wf,
-        trigger_payload=resolve_payload,
-        db=async_db,
-        http_client=mock_http_client,
-    )
-
-    assert result["status"] == "SUCCESS"
-    assert result["error"] is None
-    assert len(captured_requests) == 2
-
-    resolve_req = captured_requests[1]
-    assert resolve_req["url"] == "https://devmis.sspa.gos.pk/api/v1/imis/complaint/update-status"
-    assert resolve_req["headers"]["Authorization"] == "Bearer token-resolve-456"
-
-    # Verify encrypted body
-    decrypted_body = decrypt_sspa_payload(resolve_req["json"], "0123456789abcdef0123456789abcdef")
-    assert decrypted_body["status"] == "resolved"
-    assert decrypted_body["source_ticket_id"] == "IMIS-TICKET-2026-00123"
-    assert decrypted_body["resolved_by_system"] == "IMIS"
+    res = (await async_db.execute(select(Workflow).where(Workflow.slug.in_(["sspa-complaint-intake", "sspa-complaint-resolve"])))).scalars().all()
+    assert len(res) == 0
 
 
 @pytest.mark.asyncio
