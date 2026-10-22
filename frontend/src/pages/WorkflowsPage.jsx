@@ -235,36 +235,61 @@ export default function WorkflowsPage() {
 					</Button>
 				</Paper>
 			) : (
-				<Grid container spacing={2.5}>
+				<Box
+					sx={{
+						display: "grid",
+						gridTemplateColumns: {
+							xs: "1fr",
+							sm: "repeat(2, 1fr)",
+							lg: "repeat(3, 1fr)",
+						},
+						gap: 2.5,
+					}}
+				>
 					{workflows.map((wf) => (
-						<Grid item xs={12} md={6} key={wf.id} sx={{ display: "flex" }}>
-							<Card
-								elevation={0}
+						<Card
+							key={wf.id}
+							elevation={0}
+							sx={{
+								width: "100%",
+								height: 270,
+								minHeight: 270,
+								maxHeight: 270,
+								display: "flex",
+								flexDirection: "column",
+								boxSizing: "border-box",
+								border: `1px solid ${theme.palette.divider}`,
+								borderRadius: 2.5,
+								transition: "all 0.2s ease-in-out",
+								"&:hover": {
+									borderColor: "primary.main",
+									boxShadow: `0 4px 20px ${alpha(theme.palette.primary.main, 0.08)}`,
+								},
+							}}
+						>
+							<CardContent
 								sx={{
-									width: "100%",
+									p: 2.5,
+									"&:last-child": { pb: 2.5 },
 									height: "100%",
+									boxSizing: "border-box",
 									display: "flex",
 									flexDirection: "column",
-									border: `1px solid ${theme.palette.divider}`,
-									borderRadius: 2.5,
-									transition: "all 0.2s ease-in-out",
-									"&:hover": {
-										borderColor: "primary.main",
-										boxShadow: `0 4px 20px ${alpha(theme.palette.primary.main, 0.08)}`,
-									},
+									justifyContent: "space-between",
 								}}
 							>
-								<CardContent sx={{ p: 2.5, flex: 1, display: "flex", flexDirection: "column" }}>
-									<Stack direction="row" justifyContent="space-between" alignItems="flex-start" sx={{ mb: 1 }}>
-										<Box sx={{ minWidth: 0, flex: 1, mr: 1.5 }}>
+								{/* Header: Title + Slug & Live Switch */}
+								<Box>
+									<Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
+										<Box sx={{ minWidth: 0, flex: 1 }}>
 											<Tooltip title={wf.name} placement="top-start">
 												<Typography
-													variant="h6"
+													variant="subtitle1"
 													fontWeight={700}
 													sx={{
-														fontSize: "1.05rem",
+														fontSize: "0.95rem",
 														lineHeight: 1.3,
-														height: "2.6em",
+														height: 42,
 														display: "-webkit-box",
 														WebkitLineClamp: 2,
 														WebkitBoxOrient: "vertical",
@@ -296,7 +321,7 @@ export default function WorkflowsPage() {
 												slug: {wf.slug}
 											</Typography>
 										</Box>
-										<Stack direction="row" spacing={1} alignItems="center" sx={{ flexShrink: 0 }}>
+										<Stack direction="row" spacing={0.8} alignItems="center" sx={{ flexShrink: 0 }}>
 											<Tooltip title={wf.is_active ? "Click to set INACTIVE" : "Click to set LIVE"}>
 												<Chip
 													label={wf.is_active ? "● LIVE" : "○ INACTIVE"}
@@ -310,9 +335,10 @@ export default function WorkflowsPage() {
 													}}
 													sx={{
 														fontWeight: 700,
-														fontSize: "0.72rem",
+														fontSize: "0.7rem",
 														cursor: "pointer",
 														userSelect: "none",
+														height: 24,
 														transition: "all 0.15s ease",
 														"&:hover": {
 															opacity: 0.85,
@@ -334,99 +360,105 @@ export default function WorkflowsPage() {
 											</Tooltip>
 										</Stack>
 									</Stack>
+								</Box>
 
-									<Tooltip title={wf.description || ""} placement="top-start">
-										<Typography
-											variant="body2"
-											color="text.secondary"
-											sx={{
-												mt: 1,
-												mb: 2,
-												height: "2.8em",
-												lineHeight: 1.4,
-												display: "-webkit-box",
-												WebkitLineClamp: 2,
-												WebkitBoxOrient: "vertical",
-												overflow: "hidden",
-												textOverflow: "ellipsis",
-											}}
-										>
-											{wf.description || "No description provided."}
-										</Typography>
-									</Tooltip>
-
-									<Divider sx={{ my: 1.5 }} />
-
-									{/* Stats & Last Run */}
-									<Stack
-										direction="row"
-										justifyContent="space-between"
-										alignItems="center"
-										sx={{ mb: 2, height: 28 }}
+								{/* Description */}
+								<Tooltip title={wf.description || "No description provided."} placement="top-start">
+									<Typography
+										variant="body2"
+										color="text.secondary"
+										sx={{
+											fontSize: "0.82rem",
+											height: 38,
+											lineHeight: 1.4,
+											display: "-webkit-box",
+											WebkitLineClamp: 2,
+											WebkitBoxOrient: "vertical",
+											overflow: "hidden",
+											textOverflow: "ellipsis",
+											mt: 0.5,
+											mb: 1.5,
+										}}
 									>
-										<Chip
-											label={`${wf.step_count || 0} Steps`}
-											size="small"
-											variant="outlined"
-											icon={<AccountTree fontSize="inherit" />}
-										/>
+										{wf.description || "No description provided."}
+									</Typography>
+								</Tooltip>
 
-										{wf.last_run ? (
-											<Stack direction="row" alignItems="center" spacing={0.5}>
-												{wf.last_run.status === "SUCCESS" ? (
-													<CheckCircleOutline fontSize="small" color="success" />
-												) : (
-													<ErrorOutline fontSize="small" color="error" />
-												)}
-												<Typography variant="caption" fontWeight={600}>
-													{wf.last_run.status} ({wf.last_run.total_time_ms}ms)
-												</Typography>
-											</Stack>
-										) : (
-											<Typography variant="caption" color="text.secondary">
-												Never run
+								<Divider sx={{ my: 1 }} />
+
+								{/* Stats & Last Run */}
+								<Stack
+									direction="row"
+									justifyContent="space-between"
+									alignItems="center"
+									sx={{ height: 28, mb: 1.5 }}
+								>
+									<Chip
+										label={`${wf.step_count || 0} Steps`}
+										size="small"
+										variant="outlined"
+										icon={<AccountTree fontSize="inherit" />}
+										sx={{ height: 24, fontSize: "0.72rem" }}
+									/>
+
+									{wf.last_run ? (
+										<Stack direction="row" alignItems="center" spacing={0.5}>
+											{wf.last_run.status === "SUCCESS" ? (
+												<CheckCircleOutline fontSize="small" color="success" />
+											) : (
+												<ErrorOutline fontSize="small" color="error" />
+											)}
+											<Typography variant="caption" fontWeight={600}>
+												{wf.last_run.status} ({wf.last_run.total_time_ms}ms)
 											</Typography>
-										)}
-									</Stack>
+										</Stack>
+									) : (
+										<Typography variant="caption" color="text.secondary">
+											Never run
+										</Typography>
+									)}
+								</Stack>
 
-									{/* Action Buttons */}
-									<Stack direction="row" spacing={1} justifyContent="flex-end" sx={{ mt: "auto" }}>
-										<Button
-											variant="outlined"
-											color="primary"
+								{/* Action Buttons */}
+								<Stack direction="row" spacing={1} justifyContent="flex-end" alignItems="center" sx={{ mt: "auto" }}>
+									<Button
+										variant="outlined"
+										color="primary"
+										size="small"
+										startIcon={<PlayArrow />}
+										onClick={() => handleOpenRun(wf)}
+										sx={{ fontSize: "0.75rem", px: 1.2, py: 0.4 }}
+									>
+										Test Run
+									</Button>
+									<Button
+										variant="contained"
+										size="small"
+										endIcon={<TrendingFlat />}
+										onClick={() => navigate(`/workflows/${wf.id}`)}
+										sx={{ fontSize: "0.75rem", px: 1.2, py: 0.4 }}
+									>
+										Open Builder
+									</Button>
+									<Tooltip title="Delete Workflow">
+										<IconButton
 											size="small"
-											startIcon={<PlayArrow />}
-											onClick={() => handleOpenRun(wf)}
+											color="error"
+											onClick={() => {
+												if (window.confirm(`Delete workflow "${wf.name}"?`)) {
+													deleteMutation.mutate(wf.id);
+												}
+											}}
+											sx={{ p: 0.5 }}
 										>
-											Test Run
-										</Button>
-										<Button
-											variant="contained"
-											size="small"
-											endIcon={<TrendingFlat />}
-											onClick={() => navigate(`/workflows/${wf.id}`)}
-										>
-											Open Builder
-										</Button>
-										<Tooltip title="Delete Workflow">
-											<IconButton
-												size="small"
-												color="error"
-												onClick={() => {
-													if (window.confirm(`Delete workflow "${wf.name}"?`)) {
-														deleteMutation.mutate(wf.id);
-													}
-												}}
-											>
-												<DeleteOutline fontSize="small" />
-											</IconButton>
-										</Tooltip>
-									</Stack>
-								</CardContent>
-							</Card>
-						</Grid>
+											<DeleteOutline fontSize="small" />
+										</IconButton>
+									</Tooltip>
+								</Stack>
+							</CardContent>
+						</Card>
 					))}
-				</Grid>
+				</Box>
 			)}
 
 			{/* Modal for Creating Workflow */}
