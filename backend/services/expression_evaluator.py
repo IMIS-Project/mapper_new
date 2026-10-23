@@ -50,18 +50,8 @@ def resolve_single_reference(ref: str, context: dict[str, Any]) -> Any:
             val = get_nested_value(trigger_payload, path[16:])
         elif val is None and isinstance(trigger_payload, dict) and isinstance(trigger_payload.get("default_payload"), dict):
             val = get_nested_value(trigger_payload.get("default_payload"), path)
-        if val is None:
-            base_key = path.replace("default_payload.", "")
-            defaults = {
-                "notes": "Received via IMIS Call Center",
-                "subcategory": "Delayed Transfer",
-                "complaint_type": "benef",
-                "complainant_name": "Fatima Bibi",
-                "complainant_phone": "03001234567",
-                "program_id": 4000001,
-            }
-            if base_key in defaults:
-                val = defaults[base_key]
+        if val is None and path.endswith("program_id"):
+            val = context.get("env", {}).get("MIS_PROGRAM_ID")
         if path.endswith("program_id") and val is not None:
             try:
                 val = int(val)
