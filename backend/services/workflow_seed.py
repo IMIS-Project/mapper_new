@@ -243,11 +243,7 @@ async def _upsert_working_workflow(
             step_map = {s.step_key: s for s in existing_steps}
             for s_def in steps_config:
                 k = s_def["step_key"]
-                if k in step_map:
-                    step_map[k].step_type = s_def["step_type"]
-                    step_map[k].config = s_def["config"]
-                    step_map[k].is_active = True
-                else:
+                if k not in step_map:
                     new_s = WorkflowStep(
                         workflow_id=wf.id,
                         step_key=k,

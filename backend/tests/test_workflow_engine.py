@@ -216,3 +216,57 @@ async def test_update_ticket_workflow_execution(async_db: AsyncSession):
     assert captured[1]["json"]["status"] == "resolved"
 
 
+@pytest.mark.asyncio
+async def test_step_update_and_get_complete_data(async_db: AsyncSession):
+    await seed_default_workflows(async_db)
+
+    from backend.api.workflows_router import get_workflow, get_workflow_step, update_workflow_step, WorkflowStepUpdateRequest
+    from sqlalchemy import select
+
+    # 1. Test get_workflow returns complete step details
+    wf = (await async_db.execute(select(Workflow).where(Workflow.slug == "w"))).scalar_one()
+    res = await get_workflow(wf_id=wf.id, db=async_db, user=None)
+    assert res["success"] is True
+    steps = res["data"]["steps"]
+    assert len(steps) == 3
+
+    step_4 = next(s for s in steps if s["step_key"] == "step_4")
+    assert step_4["workflow_id"] == wf.id
+    assert "method" in step_4["config"]
+    assert "headers" in step_4["config"]
+    assert "body" in step_4["config"]
+    assert step_4["config"]["body"]["notes"] == "{{trigger.default_payload.notes}}"
+
+    # 2. Test get_workflow_step returns single step complete details
+    single_res = await get_workflow_step(wf_id=wf.id, step_id=step_4["id"], db=async_db, user=None)
+    assert single_res["success"] is True
+    assert single_res["data"]["id"] == step_4["id"]
+    assert single_res["data"]["config"]["body"]["notes"] == "{{trigger.default_payload.notes}}"
+
+    # 3. Test update_workflow_step modifies config in DB and returns updated data
+    new_config = {
+        "method": "POST",
+        "url": "https://example.com/custom-endpoint",
+        "headers": {"x-custom": "true"},
+        "body": {"custom_field": "custom_value"},
+    }
+    update_payload = WorkflowStepUpdateRequest(config=new_config)
+    update_res = await update_workflow_step(
+        wf_id=wf.id, step_id=step_4["id"], payload=update_payload, db=async_db, user=None
+    )
+    assert update_res["success"] is True
+    assert update_res["data"]["config"]["url"] == "https://example.com/custom-endpoint"
+    assert update_res["data"]["config"]["body"]["custom_field"] == "custom_value"
+
+    # Verify directly via fresh query
+    step_check = (await async_db.execute(select(WorkflowStep).where(WorkflowStep.id == step_4["id"]))).scalar_one()
+    assert step_check.config["url"] == "https://example.com/custom-endpoint"
+
+    # 4. Verify re-seeding DOES NOT overwrite user-customized config!
+    await seed_default_workflows(async_db)
+    step_after_seed = (await async_db.execute(select(WorkflowStep).where(WorkflowStep.id == step_4["id"]))).scalar_one()
+    assert step_after_seed.config["url"] == "https://example.com/custom-endpoint"
+    assert step_after_seed.config["body"]["custom_field"] == "custom_value"
+
+
+

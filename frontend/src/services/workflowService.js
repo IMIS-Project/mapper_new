@@ -25,6 +25,11 @@ export const deleteWorkflow = async (id) => {
 	return response.data;
 };
 
+export const getStep = async (workflowId, stepId) => {
+	const response = await api.get(`/workflows/${workflowId}/steps/${stepId}`);
+	return response.data?.data || null;
+};
+
 export const addStep = async (workflowId, stepData) => {
 	const response = await api.post(`/workflows/${workflowId}/steps`, stepData);
 	return response.data;
@@ -81,6 +86,7 @@ export default {
 	createWorkflow,
 	updateWorkflow,
 	deleteWorkflow,
+	getStep,
 	addStep,
 	updateStep,
 	deleteStep,

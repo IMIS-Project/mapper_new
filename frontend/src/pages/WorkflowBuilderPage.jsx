@@ -115,8 +115,15 @@ export default function WorkflowBuilderPage() {
 	}, [workflow]);
 
 	useEffect(() => {
-		if (steps.length > 0 && !selectedStep) {
-			handleSelectStep(steps[0]);
+		if (steps.length > 0) {
+			if (!selectedStep) {
+				handleSelectStep(steps[0]);
+			} else {
+				const current = steps.find((s) => s.id === selectedStep.id);
+				if (current && JSON.stringify(current) !== JSON.stringify(selectedStep)) {
+					setSelectedStep(current);
+				}
+			}
 		}
 	}, [steps]);
 
@@ -141,8 +148,14 @@ export default function WorkflowBuilderPage() {
 
 	const updateStepMutation = useMutation({
 		mutationFn: ({ stepId, data }) => workflowService.updateStep(id, stepId, data),
-		onSuccess: () => {
-			showSuccess("Step configuration saved");
+		onSuccess: (res, vars) => {
+			showSuccess("Node configuration updated successfully");
+			const updated = res?.data || {
+				id: vars.stepId,
+				...vars.data,
+			};
+			setSelectedStep(updated);
+			handleSelectStep(updated);
 			queryClient.invalidateQueries({ queryKey: ["workflow", id] });
 		},
 		onError: (err) => {
@@ -152,10 +165,13 @@ export default function WorkflowBuilderPage() {
 
 	const addStepMutation = useMutation({
 		mutationFn: (data) => workflowService.addStep(id, data),
-		onSuccess: () => {
+		onSuccess: (res) => {
 			showSuccess("Step added to pipeline");
 			queryClient.invalidateQueries({ queryKey: ["workflow", id] });
 			setAddStepOpen(false);
+			if (res?.data) {
+				handleSelectStep(res.data);
+			}
 		},
 		onError: (err) => {
 			showError(err.response?.data?.detail || err.message || "Failed to add step");
@@ -715,7 +731,7 @@ export default function WorkflowBuilderPage() {
 											onClick={handleSaveStep}
 											disabled={updateStepMutation.isPending}
 										>
-											{updateStepMutation.isPending ? "Saving..." : "Save Node"}
+											{updateStepMutation.isPending ? "Updating..." : "Update Node"}
 										</Button>
 										<Tooltip title="Delete Node">
 											<IconButton
@@ -967,6 +983,30 @@ export default function WorkflowBuilderPage() {
 											/>
 										</Box>
 									)}
+								</Stack>
+
+								{/* Bottom Action Bar */}
+								<Divider sx={{ my: 2.5 }} />
+								<Stack direction="row" justifyContent="flex-end" spacing={1.5} alignItems="center">
+									<Button
+										variant="outlined"
+										size="small"
+										startIcon={<PlayArrow />}
+										onClick={handleTestSingleStep}
+										disabled={testStepMutation.isPending}
+									>
+										{testStepMutation.isPending ? "Testing..." : "Test Node"}
+									</Button>
+									<Button
+										variant="contained"
+										color="primary"
+										size="small"
+										startIcon={updateStepMutation.isPending ? <CircularProgress size={16} color="inherit" /> : <Save />}
+										onClick={handleSaveStep}
+										disabled={updateStepMutation.isPending}
+									>
+										{updateStepMutation.isPending ? "Updating Node..." : "Update Node Configuration"}
+									</Button>
 								</Stack>
 
 								{/* Step Test Result Preview */}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
+from datetime import datetime
 from typing import Any
 import httpx
 from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request, status
@@ -9,6 +10,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from sqlalchemy.orm.attributes import flag_modified
 
 from backend.api.deps import get_current_active_user, get_db
 from backend.models.workflow import Workflow, WorkflowRun, WorkflowStep
@@ -51,7 +53,7 @@ class WorkflowStepUpdateRequest(BaseModel):
     step_key: str | None = None
     step_type: str | None = None
     step_order: int | None = None
-    config: dict[str, Any] | None = None
+    config: dict[str, Any] | str | None = None
     is_active: bool | None = None
 
 
@@ -160,19 +162,25 @@ async def get_workflow(
         raise HTTPException(status_code=404, detail="Workflow not found")
 
     sorted_steps = sorted(wf.steps, key=lambda s: s.step_order)
-    steps_data = [
-        {
+    steps_data = []
+    for s in sorted_steps:
+        cfg = s.config
+        if isinstance(cfg, str):
+            try:
+                cfg = json.loads(cfg)
+            except Exception:
+                cfg = {}
+        steps_data.append({
             "id": s.id,
+            "workflow_id": s.workflow_id,
             "step_key": s.step_key,
             "step_type": s.step_type,
             "step_order": s.step_order,
-            "config": s.config,
+            "config": cfg if cfg is not None else {},
             "is_active": s.is_active,
             "created_at": s.created_at,
             "updated_at": s.updated_at,
-        }
-        for s in sorted_steps
-    ]
+        })
 
     return {
         "success": True,
@@ -259,7 +267,58 @@ async def add_workflow_step(
     db.add(step)
     await db.commit()
     await db.refresh(step)
-    return {"success": True, "message": "Step created", "data": {"id": step.id, "step_key": step.step_key}}
+    return {
+        "success": True,
+        "message": "Step created",
+        "data": {
+            "id": step.id,
+            "workflow_id": step.workflow_id,
+            "step_key": step.step_key,
+            "step_type": step.step_type,
+            "step_order": step.step_order,
+            "config": step.config or {},
+            "is_active": step.is_active,
+            "created_at": step.created_at,
+            "updated_at": step.updated_at,
+        },
+    }
+
+
+@router.get("/{wf_id}/steps/{step_id}", response_model=dict[str, Any])
+async def get_workflow_step(
+    wf_id: str,
+    step_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: CentralUser = Depends(get_current_active_user),
+):
+    stmt = select(WorkflowStep).where(
+        WorkflowStep.workflow_id == wf_id, WorkflowStep.id == step_id
+    )
+    step = (await db.execute(stmt)).scalar_one_or_none()
+    if not step:
+        raise HTTPException(status_code=404, detail="Step not found")
+
+    cfg = step.config
+    if isinstance(cfg, str):
+        try:
+            cfg = json.loads(cfg)
+        except Exception:
+            cfg = {}
+
+    return {
+        "success": True,
+        "data": {
+            "id": step.id,
+            "workflow_id": step.workflow_id,
+            "step_key": step.step_key,
+            "step_type": step.step_type,
+            "step_order": step.step_order,
+            "config": cfg if cfg is not None else {},
+            "is_active": step.is_active,
+            "created_at": step.created_at,
+            "updated_at": step.updated_at,
+        },
+    }
 
 
 @router.put("/{wf_id}/steps/reorder", response_model=dict[str, Any])
@@ -296,20 +355,67 @@ async def update_workflow_step(
     if not step:
         raise HTTPException(status_code=404, detail="Step not found")
 
-    if payload.step_key is not None:
-        step.step_key = payload.step_key
+    if payload.step_key is not None and payload.step_key.strip():
+        new_key = payload.step_key.strip()
+        if new_key != step.step_key:
+            conflict_stmt = select(func.count(WorkflowStep.id)).where(
+                WorkflowStep.workflow_id == wf_id,
+                WorkflowStep.step_key == new_key,
+                WorkflowStep.id != step_id,
+            )
+            conflict_count = (await db.execute(conflict_stmt)).scalar() or 0
+            if conflict_count > 0:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"A step with key '{new_key}' already exists in this workflow.",
+                )
+            step.step_key = new_key
+
     if payload.step_type is not None:
         step.step_type = payload.step_type
     if payload.step_order is not None:
         step.step_order = payload.step_order
+
     if payload.config is not None:
-        step.config = payload.config
+        cfg = payload.config
+        if isinstance(cfg, str):
+            try:
+                cfg = json.loads(cfg)
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Invalid JSON in config: {e}")
+        step.config = dict(cfg) if isinstance(cfg, dict) else cfg
+        flag_modified(step, "config")
+
     if payload.is_active is not None:
         step.is_active = payload.is_active
 
+    step.updated_at = datetime.now()
+
     await db.commit()
     await db.refresh(step)
-    return {"success": True, "message": "Step updated"}
+
+    cfg = step.config
+    if isinstance(cfg, str):
+        try:
+            cfg = json.loads(cfg)
+        except Exception:
+            cfg = {}
+
+    return {
+        "success": True,
+        "message": "Step updated successfully",
+        "data": {
+            "id": step.id,
+            "workflow_id": step.workflow_id,
+            "step_key": step.step_key,
+            "step_type": step.step_type,
+            "step_order": step.step_order,
+            "config": cfg if cfg is not None else {},
+            "is_active": step.is_active,
+            "created_at": step.created_at,
+            "updated_at": step.updated_at,
+        },
+    }
 
 
 @router.delete("/{wf_id}/steps/{step_id}", response_model=dict[str, Any])
