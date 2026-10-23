@@ -712,5 +712,15 @@ async def webhook_trigger_endpoint(
         body = dict(request.query_params)
 
     headers = dict(request.headers)
+
+    print("=" * 60, flush=True)
+    print(f"[WORKFLOW WEBHOOK HIT] /api/workflows/webhook/{slug}", flush=True)
+    print(f"Method: {request.method}", flush=True)
+    try:
+        print("Incoming Data (Payload):\n" + json.dumps(body, indent=2, default=str), flush=True)
+    except Exception:
+        print(f"Incoming Data (Payload): {body}", flush=True)
+    print("=" * 60, flush=True)
+
     return await execute_workflow_by_slug(slug, body, db, http_client, request_headers=headers)
 

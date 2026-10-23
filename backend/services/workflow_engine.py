@@ -205,6 +205,14 @@ async def run_workflow(
     start_time = time.perf_counter()
     env_vars = await get_env_dict(db)
 
+    print("=" * 60, flush=True)
+    print(f"[WORKFLOW EXECUTION] [{workflow.slug}] {workflow.name}", flush=True)
+    try:
+        print("INCOMING TRIGGER PAYLOAD:\n" + json.dumps(trigger_payload, indent=2, default=str), flush=True)
+    except Exception:
+        print(f"INCOMING TRIGGER PAYLOAD: {trigger_payload}", flush=True)
+    print("-" * 60, flush=True)
+
     context: dict[str, Any] = {
         "env": env_vars,
         "trigger": trigger_payload,
@@ -223,9 +231,11 @@ async def run_workflow(
 
     for step in steps:
         step_start = time.perf_counter()
+        print(f"  -> Step [{step.step_order}] '{step.step_key}' ({step.step_type})", flush=True)
         try:
             output = await execute_step(step, context, http_client)
             step_duration_ms = int((time.perf_counter() - step_start) * 1000)
+            print(f"  [OK] Step [{step.step_order}] '{step.step_key}' finished ({step_duration_ms}ms)", flush=True)
 
             http_log = None
             if isinstance(output, dict) and "_http_log" in output:
@@ -248,6 +258,7 @@ async def run_workflow(
             step_results.append(step_entry)
         except Exception as exc:
             step_duration_ms = int((time.perf_counter() - step_start) * 1000)
+            print(f"  [ERROR] Step [{step.step_order}] '{step.step_key}' FAILED: {exc}", flush=True)
             overall_status = "FAILED"
             error_message = f"Step '{step.step_key}' failed: {exc}"
             logger.error("Workflow '%s' failed at step '%s': %s", workflow.slug, step.step_key, exc)
@@ -272,6 +283,8 @@ async def run_workflow(
             break
 
     total_time_ms = int((time.perf_counter() - start_time) * 1000)
+    print(f"[WORKFLOW COMPLETED] slug='{workflow.slug}', status={overall_status}, time={total_time_ms}ms", flush=True)
+    print("=" * 60, flush=True)
 
     run_record = WorkflowRun(
         workflow_id=workflow.id,
