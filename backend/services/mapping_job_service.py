@@ -49,9 +49,12 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "MAPPING_RUN_KIND",
+    "MappingInactiveError",
     "MappingJobOutcome",
     "MappingLeg",
     "MappingRoute",
+    "MappingStatus",
+    "check_mapping_active",
     "execute_mapping_job",
     "is_absolute_http_url",
     "list_routes",
@@ -82,9 +85,27 @@ _DROP_HEADERS = frozenset(
 )
 
 
+class MappingInactiveError(Exception):
+    """The API mapping associated with this cron job is inactive in Endpoints."""
+
+    def __init__(self, endpoint_code: str | None = None, endpoint_id: int | None = None):
+        name = endpoint_code or (f"#{endpoint_id}" if endpoint_id else "associated with this job")
+        super().__init__(f"API mapping '{name}' is currently inactive in Endpoints. Execution skipped.")
+        self.endpoint_code = endpoint_code
+        self.endpoint_id = endpoint_id
+
+
+@dataclass(frozen=True, slots=True)
+class MappingStatus:
+    is_mapping: bool
+    is_active: bool
+    endpoint_id: int | None = None
+    endpoint_code: str | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class MappingRoute:
-    """One active mapping, as offered to the cron job form."""
+    """One active or registered mapping, as offered to the cron job form or list."""
 
     endpoint_id: int
     endpoint_code: str | None
@@ -92,6 +113,7 @@ class MappingRoute:
     external_url: str
     method: str
     parameter_count: int
+    is_active: bool = True
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -101,6 +123,7 @@ class MappingRoute:
             "external_url": self.external_url,
             "method": self.method,
             "parameter_count": self.parameter_count,
+            "is_active": self.is_active,
         }
 
 
@@ -188,16 +211,18 @@ def _request_payload(body: str | None, url: str | None = None) -> dict[str, Any]
     return payload
 
 
-async def _fetch_routes(db: AsyncSession) -> list[MappingRoute]:
-    rows = await db.execute(
-        select(
-            ApiEndpoint.id,
-            ApiEndpoint.endpoint_code,
-            ApiEndpoint.source_api_url,
-            ApiEndpoint.target_api_url,
-            ApiEndpoint.method,
-        ).where(ApiEndpoint.is_active == True)
+async def _fetch_routes(db: AsyncSession, only_active: bool = True) -> list[MappingRoute]:
+    query = select(
+        ApiEndpoint.id,
+        ApiEndpoint.endpoint_code,
+        ApiEndpoint.source_api_url,
+        ApiEndpoint.target_api_url,
+        ApiEndpoint.method,
+        ApiEndpoint.is_active,
     )
+    if only_active:
+        query = query.where(ApiEndpoint.is_active == True)
+    rows = await db.execute(query)
     counts = await db.execute(
         select(ParameterMapping.api_endpoint_id, func.count(ParameterMapping.id))
         .where(ParameterMapping.is_active == True)
@@ -212,17 +237,114 @@ async def _fetch_routes(db: AsyncSession) -> list[MappingRoute]:
             external_url=(row.source_api_url or "").strip(),
             method=(row.method or "POST").strip().upper(),
             parameter_count=count_by_endpoint.get(int(row.id), 0),
+            is_active=bool(row.is_active),
         )
         for row in rows.all()
     ]
 
 
-async def list_routes(db: AsyncSession | None = None) -> list[MappingRoute]:
-    """Every active mapping the cron form can bind to (SELECT only)."""
+async def list_routes(
+    db: AsyncSession | None = None, only_active: bool = True
+) -> list[MappingRoute]:
+    """Mappings the cron form or list can bind to (SELECT only)."""
     if db is not None:
-        return await _fetch_routes(db)
+        return await _fetch_routes(db, only_active=only_active)
     async with AsyncSessionLocal() as own_db:
-        return await _fetch_routes(own_db)
+        return await _fetch_routes(own_db, only_active=only_active)
+
+
+async def check_mapping_active(
+    url: str,
+    method: str,
+    db: AsyncSession | None = None,
+) -> MappingStatus:
+    clean_url = str(url or "").strip()
+    clean_method = str(method or "").strip().upper()
+    if not clean_url:
+        return MappingStatus(is_mapping=False, is_active=False)
+
+    own_db = db is None
+    session = db or AsyncSessionLocal()
+    try:
+        query = select(
+            ApiEndpoint.id,
+            ApiEndpoint.endpoint_code,
+            ApiEndpoint.target_api_url,
+            ApiEndpoint.source_api_url,
+            ApiEndpoint.method,
+            ApiEndpoint.is_active,
+        )
+        if clean_method:
+            query = query.where(
+                (ApiEndpoint.method.is_(None)) | (func.upper(ApiEndpoint.method) == clean_method)
+            )
+        query = query.order_by(ApiEndpoint.is_active.desc(), ApiEndpoint.id.desc())
+        result = await session.execute(query)
+        rows = result.all()
+
+        route = clean_url.split("?", 1)[0].rstrip("/")
+        path = urlsplit(clean_url).path.rstrip("/")
+        if path and not path.startswith("/"):
+            path = f"/{path}"
+
+        matched_row = None
+        for r in rows:
+            target = str(r.target_api_url or "").strip().rstrip("/")
+            target_route = target.split("?", 1)[0].rstrip("/")
+            target_path = urlsplit(target).path.rstrip("/")
+            if target_path and not target_path.startswith("/"):
+                target_path = f"/{target_path}"
+
+            source = str(r.source_api_url or "").strip().rstrip("/")
+            source_route = source.split("?", 1)[0].rstrip("/")
+            source_path = urlsplit(source).path.rstrip("/")
+            if source_path and not source_path.startswith("/"):
+                source_path = f"/{source_path}"
+
+            is_target_match = (
+                (clean_url.lower() == target.lower())
+                or (route and target_route and route.lower() == target_route.lower())
+                or (
+                    bool(path)
+                    and bool(target_path)
+                    and (
+                        path.lower() == target_path.lower()
+                        or target_route.lower().endswith(path.lower())
+                        or route.lower().endswith(target_path.lower())
+                    )
+                )
+            )
+            is_source_match = (
+                (clean_url.lower() == source.lower())
+                or (route and source_route and route.lower() == source_route.lower())
+                or (
+                    bool(path)
+                    and bool(source_path)
+                    and (
+                        path.lower() == source_path.lower()
+                        or source_route.lower().endswith(path.lower())
+                        or route.lower().endswith(source_path.lower())
+                    )
+                )
+            )
+
+            if is_target_match or is_source_match:
+                matched_row = r
+                if bool(r.is_active):
+                    break
+
+        if matched_row is None:
+            return MappingStatus(is_mapping=False, is_active=False)
+
+        return MappingStatus(
+            is_mapping=True,
+            is_active=bool(matched_row.is_active),
+            endpoint_id=int(matched_row.id),
+            endpoint_code=matched_row.endpoint_code,
+        )
+    finally:
+        if own_db:
+            await session.close()
 
 
 async def resolve_endpoint(
@@ -439,6 +561,12 @@ async def execute_mapping_job(
     own_db = db is None
     session = db or AsyncSessionLocal()
     try:
+        mapping_status = await check_mapping_active(internal_url, method, db=session)
+        if mapping_status.is_mapping and not mapping_status.is_active:
+            raise MappingInactiveError(
+                endpoint_code=mapping_status.endpoint_code,
+                endpoint_id=mapping_status.endpoint_id,
+            )
         engine = GatewayEngine(session, http_client, timeout=_timeout())
         try:
             endpoint = await engine.resolve_endpoint(None, internal_url, method)

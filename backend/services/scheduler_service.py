@@ -66,6 +66,10 @@ class SchedulerJobDisabledError(Exception):
     """A scheduler job exists but is currently disabled."""
 
 
+class SchedulerMappingInactiveError(Exception):
+    """The API mapping associated with this cron job is inactive in Endpoints."""
+
+
 class SchedulerLimitError(Exception):
     """The scheduler job limit has been reached."""
 
@@ -153,7 +157,7 @@ def _skipped_run(
 
 
 async def is_mapping_backed(url: str, method: str) -> bool:
-    """True when ``url``/``method`` resolve to an active API mapping.
+    """True when ``url``/``method`` resolve to an active or known API mapping.
 
     Such a job dials destinations an administrator registered in
     ``api_endpoint`` — the same rows the gateway already calls on every inbound
@@ -161,7 +165,11 @@ async def is_mapping_backed(url: str, method: str) -> bool:
     apply to them. The lookup itself is a plain SELECT.
     """
     try:
+        status = await mapping_job_service.check_mapping_active(url, method)
+        if status.is_mapping:
+            return True
         endpoint = await mapping_job_service.resolve_endpoint(url, method)
+        return endpoint is not None
     except Exception:
         logger.warning(
             "Could not check whether %s %s is mapping-backed",
@@ -170,7 +178,6 @@ async def is_mapping_backed(url: str, method: str) -> bool:
             exc_info=True,
         )
         return False
-    return endpoint is not None
 
 
 async def start_scheduler(http_client: httpx.AsyncClient) -> None:
@@ -740,6 +747,13 @@ async def execute_scheduled_job(job_id: str, url: str, method: str) -> Scheduled
                 logger.info("Skipping scheduled job %s: %s", job_id, reason)
                 return _skipped_run(job_id, url, method, reason, started)
 
+            mapping_status = await mapping_job_service.check_mapping_active(url, method)
+            if mapping_status.is_mapping and not mapping_status.is_active:
+                mapping_name = mapping_status.endpoint_code or f"#{mapping_status.endpoint_id}"
+                reason = f"API mapping '{mapping_name}' is currently inactive in Endpoints. Execution skipped."
+                logger.info("Skipping scheduled job %s: %s", job_id, reason)
+                return _skipped_run(job_id, url, method, reason, started)
+
             headers = load_headers(row.headers)
             body = row.body
 
@@ -754,13 +768,17 @@ async def execute_scheduled_job(job_id: str, url: str, method: str) -> Scheduled
             # flow instead: the external API is called first and its response
             # is forwarded verbatim to the internal API. Both tables are only
             # ever SELECTed.
-            mapping = await mapping_job_service.execute_mapping_job(
-                internal_url=url,
-                method=method,
-                headers=headers,
-                body=body,
-                http_client=client,
-            )
+            try:
+                mapping = await mapping_job_service.execute_mapping_job(
+                    internal_url=url,
+                    method=method,
+                    headers=headers,
+                    body=body,
+                    http_client=client,
+                )
+            except mapping_job_service.MappingInactiveError as exc:
+                logger.info("Skipping scheduled job %s: %s", job_id, exc)
+                return _skipped_run(job_id, url, method, str(exc), started)
 
             if mapping is not None:
                 status_code = mapping.status_code
@@ -867,4 +885,10 @@ async def run_job_now(db: AsyncSession, job_id: str) -> ScheduledJobRun:
         raise SchedulerNotFoundError("Scheduled job not found")
     if not row.enabled:
         raise SchedulerJobDisabledError("Scheduled job is disabled")
+    mapping_status = await mapping_job_service.check_mapping_active(row.url, row.method)
+    if mapping_status.is_mapping and not mapping_status.is_active:
+        mapping_name = mapping_status.endpoint_code or f"#{mapping_status.endpoint_id}"
+        raise SchedulerMappingInactiveError(
+            f"API mapping '{mapping_name}' is currently inactive in Endpoints. Execution skipped."
+        )
     return await execute_scheduled_job(row.job_id, row.url, row.method)

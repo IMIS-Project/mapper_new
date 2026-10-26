@@ -30,13 +30,13 @@ User = CentralUser
 
 
 async def _mapping_routes() -> dict[tuple[str, str], mapping_job_service.MappingRoute]:
-    """Active mappings indexed by ``(internal URL, method)``.
+    """Mappings indexed by ``(internal URL, method)``.
 
-    One pair of SELECTs per response instead of one lookup per job, so the
-    15-second list poll stays cheap.
+    Includes both active and inactive mappings so existing cron jobs bound to
+    a deactivated mapping retain their mapping metadata and show inactive status.
     """
     try:
-        routes = await mapping_job_service.list_routes()
+        routes = await mapping_job_service.list_routes(only_active=False)
     except Exception:
         logger.warning(
             "Could not read API mappings for the cron job list", exc_info=True
@@ -241,6 +241,14 @@ async def run_scheduled_job_now(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except scheduler_service.SchedulerJobDisabledError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except scheduler_service.SchedulerMappingInactiveError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "MAPPING_INACTIVE",
+                "message": str(exc),
+            },
+        ) from exc
     return _detail(run)
 
 

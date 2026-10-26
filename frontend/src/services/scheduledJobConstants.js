@@ -24,6 +24,9 @@ export const getErrorMessage = (error, fallback = "Something went wrong.") => {
 		return detail.map((item) => item?.msg || JSON.stringify(item)).join("; ") || fallback;
 	}
 	if (typeof detail === "string") return detail;
+	if (detail && typeof detail === "object" && typeof detail.message === "string") {
+		return detail.message;
+	}
 	if (detail) return JSON.stringify(detail);
 	return error?.message || fallback;
 };

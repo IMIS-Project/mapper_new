@@ -227,6 +227,7 @@ class ScheduledJobMapping(BaseModel):
     external_url: str
     method: str
     parameter_count: int = 0
+    is_active: bool = True
 
 
 class ScheduledJobResponse(BaseModel):
