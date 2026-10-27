@@ -9,6 +9,27 @@ import {
 
 const SnackbarContext = createContext(null);
 
+function sanitizeSnackbarMessage(msg) {
+	if (!msg) return "";
+	if (typeof msg === "string") {
+		const trimmed = msg.trim();
+		if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+			try {
+				const parsed = JSON.parse(trimmed);
+				return sanitizeSnackbarMessage(parsed);
+			} catch {}
+		}
+		return trimmed;
+	}
+	if (typeof msg === "object") {
+		if (typeof msg.message === "string") return sanitizeSnackbarMessage(msg.message);
+		if (typeof msg.msg === "string") return sanitizeSnackbarMessage(msg.msg);
+		if (typeof msg.error === "string") return sanitizeSnackbarMessage(msg.error);
+		if (msg.detail !== undefined) return sanitizeSnackbarMessage(msg.detail);
+	}
+	return String(msg);
+}
+
 export function SnackbarProvider({ children }) {
 	const [state, setState] = useState({
 		open: false,
@@ -18,9 +39,10 @@ export function SnackbarProvider({ children }) {
 	});
 
 	const showSnackbar = useCallback((message, severity = "info") => {
+		const cleanMessage = sanitizeSnackbarMessage(message);
 		setState((prev) => ({
 			open: true,
-			message,
+			message: cleanMessage,
 			severity,
 
 			key: prev.key + 1,

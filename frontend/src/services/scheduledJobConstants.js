@@ -18,17 +18,50 @@ export const scheduleLabel = (job) => {
 	return "—";
 };
 
+export const extractHumanMessage = (value) => {
+	if (!value) return null;
+	if (typeof value === "string") {
+		const trimmed = value.trim();
+		if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+			try {
+				const parsed = JSON.parse(trimmed);
+				const extracted = extractHumanMessage(parsed);
+				if (extracted) return extracted;
+			} catch {}
+		}
+		return trimmed;
+	}
+	if (typeof value === "object") {
+		if (Array.isArray(value)) {
+			const items = value.map(extractHumanMessage).filter(Boolean);
+			if (items.length) return items.join("; ");
+		}
+		if (typeof value.message === "string" && value.message.trim()) {
+			return extractHumanMessage(value.message);
+		}
+		if (typeof value.msg === "string" && value.msg.trim()) {
+			return extractHumanMessage(value.msg);
+		}
+		if (typeof value.error === "string" && value.error.trim()) {
+			return extractHumanMessage(value.error);
+		}
+		if (value.detail !== undefined) {
+			const nested = extractHumanMessage(value.detail);
+			if (nested) return nested;
+		}
+	}
+	return null;
+};
+
 export const getErrorMessage = (error, fallback = "Something went wrong.") => {
-	const detail = error?.response?.data?.detail;
-	if (Array.isArray(detail)) {
-		return detail.map((item) => item?.msg || JSON.stringify(item)).join("; ") || fallback;
-	}
-	if (typeof detail === "string") return detail;
-	if (detail && typeof detail === "object" && typeof detail.message === "string") {
-		return detail.message;
-	}
-	if (detail) return JSON.stringify(detail);
-	return error?.message || fallback;
+	const data = error?.response?.data;
+	const extracted =
+		extractHumanMessage(data?.detail) ||
+		extractHumanMessage(data?.message) ||
+		extractHumanMessage(data) ||
+		extractHumanMessage(error?.message);
+
+	return extracted || fallback;
 };
 
 export const METHODS = [

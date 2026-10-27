@@ -55,6 +55,7 @@ import scheduledJobService from "../services/scheduledJobService";
 import {
 	METHODS,
 	buildBodySkeleton,
+	extractHumanMessage,
 	formatBody,
 	formatBytes,
 	formatDate,
@@ -228,7 +229,7 @@ export default function CronJobsPage() {
 					queryClient.invalidateQueries({ queryKey: ["scheduled-jobs"] }),
 					queryClient.invalidateQueries({ queryKey: ["scheduled-runs"] }),
 				]);
-				const message = variables.action === "toggle" ? (result.enabled ? "Cron job resumed" : "Cron job paused") : variables.action === "run" ? (result?.error ? result.error : "Cron job executed") : "Cron job deleted";
+				const message = variables.action === "toggle" ? (result.enabled ? "Cron job resumed" : "Cron job paused") : variables.action === "run" ? (result?.error ? (extractHumanMessage(result.error) || result.error) : "Cron job executed") : "Cron job deleted";
 				const severity = variables.action === "run" && result?.error ? "warning" : "success";
 				showSnackbar(message, severity);
 			},
