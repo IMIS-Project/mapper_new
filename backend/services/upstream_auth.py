@@ -390,17 +390,21 @@ async def apply_upstream_auth(
     leaked to a third party that never asked for it.
     """
     header_name = _header_name()
+    token = _static_token_for(upstream_url) if upstream_url else None
+    if token:
+        clean_token = token.replace("Bearer ", "").strip()
+        header_params[header_name] = f"Bearer {clean_token}"
+        header_params["X-Api-Token"] = clean_token
+        logger.debug(
+            "Injecting static API token headers (%s, X-Api-Token) for %s",
+            header_name,
+            upstream_url,
+        )
+        return False
+
     for existing in header_params:
         if existing.lower() in {"authorization", "x-api-token", header_name.lower()}:
             return False
-
-    token = _static_token_for(upstream_url) if upstream_url else None
-    if token:
-        logger.debug(
-            "Injecting static API token header %r for %s", header_name, upstream_url
-        )
-        header_params[header_name] = _token_value(token)
-        return False
 
     if not _configured():
         return False
