@@ -176,9 +176,9 @@ async def gateway_proxy(
             "timeout_configured",
         }
     )
-    content = {key: value for key, value in result.items() if key not in _INTERNAL_KEYS}
-    if "message" not in content:
-        content["message"] = "Success" if content.get("success") else "Error"
-    if "resCode" not in content:
-        content["resCode"] = status_code
+    filtered = {key: value for key, value in result.items() if key not in _INTERNAL_KEYS}
+    content = {"success": filtered.get("success")}
+    content["message"] = filtered.pop("message", "Success" if filtered.get("success") else "Error")
+    content["resCode"] = filtered.pop("resCode", status_code)
+    content.update({k: v for k, v in filtered.items() if k != "success"})
     return JSONResponse(status_code=status_code, content=content)
