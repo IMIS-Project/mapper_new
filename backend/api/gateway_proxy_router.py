@@ -57,16 +57,19 @@ _DROP_HEADERS = frozenset(
 
 
 async def _request_payload(request: Request) -> dict[str, Any]:
-    """Mirror the legacy handler: GET reads the query string, others the JSON."""
+    """Merge URL query params with the JSON body (body wins on conflict)."""
+    query = dict(request.query_params)
+
     if request.method == "GET":
-        return dict(request.query_params)
+        return query
 
     try:
         payload = await request.json()
     except Exception:
-        return {}
+        return query
 
-    return payload if isinstance(payload, dict) else {}
+    body = payload if isinstance(payload, dict) else {}
+    return {**query, **body}
 
 
 @router.api_route("/{path:path}", methods=list(_METHODS))
