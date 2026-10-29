@@ -57,7 +57,12 @@ _DROP_HEADERS = frozenset(
 
 
 async def _request_payload(request: Request) -> dict[str, Any]:
-    """Merge URL query params with the JSON body (body wins on conflict)."""
+    """Merge URL query params with the request body (body wins on conflict).
+
+    Tries JSON first, then falls back to form data so that both
+    ``application/json`` and ``application/x-www-form-urlencoded`` POST
+    bodies are forwarded correctly.
+    """
     query = dict(request.query_params)
 
     if request.method == "GET":
@@ -65,11 +70,18 @@ async def _request_payload(request: Request) -> dict[str, Any]:
 
     try:
         payload = await request.json()
+        body = payload if isinstance(payload, dict) else {}
+        return {**query, **body}
     except Exception:
-        return query
+        pass
 
-    body = payload if isinstance(payload, dict) else {}
-    return {**query, **body}
+    try:
+        form = await request.form()
+        return {**query, **dict(form)}
+    except Exception:
+        pass
+
+    return query
 
 
 @router.api_route("/{path:path}", methods=list(_METHODS))
