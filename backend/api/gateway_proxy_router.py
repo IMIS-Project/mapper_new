@@ -150,5 +150,18 @@ async def gateway_proxy(
     if status_code == 204:
         return Response(status_code=204)
 
-    content = {key: value for key, value in result.items() if key != "status_code"}
+    _INTERNAL_KEYS = frozenset(
+        {
+            "status_code",
+            "request_id",
+            "endpoint_id",
+            "tenant_id",
+            "method",
+            "path",
+            "request_headers",
+            "external_request_headers",
+            "internal_request_body",
+        }
+    )
+    content = {key: value for key, value in result.items() if key not in _INTERNAL_KEYS}
     return JSONResponse(status_code=status_code, content=content)
