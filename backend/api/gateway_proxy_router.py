@@ -177,4 +177,8 @@ async def gateway_proxy(
         }
     )
     content = {key: value for key, value in result.items() if key not in _INTERNAL_KEYS}
+    if "message" not in content:
+        content["message"] = "Success" if content.get("success") else "Error"
+    if "resCode" not in content:
+        content["resCode"] = status_code
     return JSONResponse(status_code=status_code, content=content)
