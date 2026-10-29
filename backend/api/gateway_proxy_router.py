@@ -161,6 +161,19 @@ async def gateway_proxy(
             "request_headers",
             "external_request_headers",
             "internal_request_body",
+            "response_time_ms",
+            "total_time_ms",
+            "response_headers",
+            "error",
+            "external_request_url",
+            "external_request_method",
+            "external_request_body",
+            "external_query_params",
+            "external_response_headers",
+            "external_status_code",
+            "external_response_time_ms",
+            "status",
+            "timeout_configured",
         }
     )
     content = {key: value for key, value in result.items() if key not in _INTERNAL_KEYS}
